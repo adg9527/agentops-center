@@ -155,9 +155,6 @@ function selectConversation(id: number | null) {
   selectedConv.value = id
 }
 
-function onMenuClick({ key }: { key: string | number }) {
-  selectConversation(key === 'all' ? null : Number(key))
-}
 
 async function submitTask() {
   if (!form.prompt.trim() || !form.agent_ids.length) {
@@ -202,25 +199,25 @@ onMounted(async () => {
   <a-row :gutter="16">
     <a-col :xs="24" :md="7" :xl="6">
       <a-card size="small" title="会话" :bordered="false" :body-style="{ padding: '8px' }">
-        <a-menu mode="inline" :selected-keys="[selectedConv === null ? 'all' : String(selectedConv)]" style="border: none" @click="onMenuClick">
-          <a-menu-item key="all">
-            <a-space>
-              <span>全部任务</span>
-              <a-badge :count="tasks.length" :number-style="{ backgroundColor: '#d9d9d9' }" />
-            </a-space>
-          </a-menu-item>
-          <a-menu-item v-for="c in conversationList" :key="String(c.id)" >
-            <div class="conv-item">
-              <div class="conv-title">
-                <span>{{ c.name }}</span>
-                <a-badge v-if="c.live_count" status="processing" />
-              </div>
-              <div class="conv-meta">
-                {{ c.task_count }} 个任务 · {{ c.member_count }} 个参与者
-              </div>
+        <div class="conv-list">
+          <div class="conv-entry" :class="{ active: selectedConv === null }" @click="selectConversation(null)">
+            <span>全部任务</span>
+            <a-badge :count="tasks.length" :number-style="{ backgroundColor: '#d9d9d9' }" />
+          </div>
+          <div
+            v-for="c in conversationList"
+            :key="c.id"
+            class="conv-entry"
+            :class="{ active: selectedConv === c.id }"
+            @click="selectConversation(c.id)"
+          >
+            <div class="conv-title">
+              <span>{{ c.name }}</span>
+              <a-badge v-if="c.live_count" status="processing" />
             </div>
-          </a-menu-item>
-        </a-menu>
+            <div class="conv-meta">{{ c.task_count }} 个任务 · {{ c.member_count }} 个参与者</div>
+          </div>
+        </div>
         <a-empty v-if="!conversationList.length" description="还没有会话" :image-style="{ height: '40px' }" />
       </a-card>
 
@@ -333,6 +330,31 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.conv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.conv-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.conv-entry:hover {
+  background: #f5f7fa;
+}
+
+.conv-entry.active {
+  background: #e6f0ff;
+  border-color: #91caff;
+}
+
 .conv-item {
   padding: 2px 0;
 }

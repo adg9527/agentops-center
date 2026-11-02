@@ -6,6 +6,7 @@ const pages: RouteRecordRaw[] = [
   { path: 'agents', name: 'agents', component: () => import('../pages/Agents.vue') },
   { path: 'tasks', name: 'tasks', component: () => import('../pages/Tasks.vue') },
   { path: 'tasks/:id', name: 'task-detail', component: () => import('../pages/TaskDetail.vue'), props: true },
+  { path: 'sessions', name: 'sessions', component: () => import('../pages/LocalSessions.vue') },
   { path: 'monitor', name: 'monitor', component: () => import('../pages/Monitor.vue') },
   { path: 'settings', name: 'settings', component: () => import('../pages/Settings.vue') },
   { path: 'chat', name: 'chat', component: () => import('../pages/Chat.vue') },
