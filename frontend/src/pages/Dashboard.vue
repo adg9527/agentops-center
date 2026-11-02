@@ -7,6 +7,7 @@ import * as echarts from 'echarts'
 import { api, type Agent } from '../api'
 import { useLive } from '../live'
 import StatusTag from '../components/StatusTag.vue'
+import TaskGraphPanel from '../components/TaskGraphPanel.vue'
 import { fmtCost, fmtMs, fmtNum, fmtTime } from '../labels'
 
 interface DailyRun {
@@ -417,6 +418,7 @@ useLive((m) => {
         </a-col>
       </a-row>
 
+      <TaskGraphPanel style="margin-bottom: 16px" />
       <a-card size="small" title="最近任务">
         <a-list :data-source="summary.recent_tasks" :locale="{ emptyText: '暂无任务' }">
           <template #renderItem="{ item }">

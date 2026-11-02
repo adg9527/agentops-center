@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import agents, auth, collab, system, tasks
+from .api import agents, auth, collab, graph, system, tasks
 from .config import PROJECT_DIR, get_settings
 from .db import create_all
 from .services.collab import orchestrator, recover_collab
@@ -41,7 +41,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    for r in (auth.router, auth.users_router, agents.router, tasks.router, collab.router, system.router):
+    for r in (auth.router, auth.users_router, agents.router, tasks.router, collab.router, system.router,
+              graph.router):
         app.include_router(r)
 
     @app.get("/api/health")
