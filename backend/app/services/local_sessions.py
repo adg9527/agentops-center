@@ -1,27 +1,35 @@
-"""Read the agent CLIs' own session transcripts (currently Claude Code).
+"""Read the agent CLIs' own session transcripts.
 
-Claude Code keeps one JSONL transcript per session under
-`~/.claude/projects/<slugified-cwd>/<session-id>.jsonl`. The platform's task
-records only know what the adapter reported; these files are the full record the
-local tool itself keeps, which is what "进去看进展" needs.
+Two local stores are supported, both read-only:
 
-Read-only: nothing here writes to the agent's directories.
+* **Claude Code** — one JSONL per session under `~/.claude/projects/<slug>/<id>.jsonl`
+* **OpenCode** — sessions/messages/parts in `~/.local/share/opencode/opencode.db` (SQLite)
+
+These are the full records the tools keep themselves; the platform's task rows only
+know what the adapter reported.
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 
 _MAX_TITLE = 90
 _HEAD_BYTES = 256 * 1024
+SOURCES = {"claude": "Claude Code", "opencode": "OpenCode"}
 
 
 def _iso(ts: str | None) -> str | None:
     return ts or None
+
+
+def _from_ms(ms: int | None) -> str | None:
+    return datetime.fromtimestamp((ms or 0) / 1000).isoformat() if ms else None
 
 
 def _text_of(content) -> str:
@@ -38,8 +46,14 @@ def _text_of(content) -> str:
     return ""
 
 
+def normalize_path(path: str | None) -> str:
+    return (path or "").replace("\\", "/").rstrip("/").lower()
+
+
+# ------------------------------------------------------------------ Claude Code
+
+
 def _read_head(path: Path) -> list[dict]:
-    """Parse the first chunk of a transcript: enough for cwd, title and timing."""
     rows: list[dict] = []
     with path.open("rb") as fh:
         data = fh.read(_HEAD_BYTES)
@@ -53,7 +67,7 @@ def _read_head(path: Path) -> list[dict]:
     return rows
 
 
-def _session_meta(path: Path, root: Path) -> dict | None:
+def _claude_meta(path: Path) -> dict | None:
     rows = _read_head(path)
     if not rows:
         return None
@@ -86,34 +100,11 @@ def _session_meta(path: Path, root: Path) -> dict | None:
         "started_at": _iso(started),
         "last_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
         "size_kb": round(stat.st_size / 1024, 1),
+        "cost": None,
     }
 
 
-def list_sessions(*, limit: int = 60, query: str = "", root: Path | None = None) -> list[dict]:
-    """Most recently updated Claude Code sessions, optionally filtered by text."""
-    base = root or CLAUDE_PROJECTS
-    if not base.is_dir():
-        return []
-    files = sorted(base.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    out: list[dict] = []
-    seen: set[str] = set()
-    q = query.strip().lower()
-    for path in files:
-        if len(out) >= limit:
-            break
-        if path.stem in seen:
-            continue
-        meta = _session_meta(path, base)
-        if not meta:
-            continue
-        if q and q not in meta["title"].lower() and q not in (meta["project_path"] or "").lower():
-            continue
-        seen.add(path.stem)
-        out.append(meta)
-    return out
-
-
-def _transcript(path: Path) -> list[dict]:
+def _claude_transcript(path: Path) -> list[dict]:
     entries: list[dict] = []
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -136,32 +127,182 @@ def _transcript(path: Path) -> list[dict]:
                         if isinstance(block, dict) and block.get("type") == "tool_result":
                             result = block.get("content")
                             entries.append({
-                                "role": "tool",
-                                "kind": "tool_result",
-                                "name": "result",
+                                "role": "tool", "kind": "tool_result", "name": "result",
                                 "text": _text_of(result) or (result if isinstance(result, str) else ""),
-                                "error": bool(block.get("is_error")),
-                                "at": ts,
+                                "error": bool(block.get("is_error")), "at": ts,
                             })
-            elif kind == "assistant":
-                if isinstance(content, list):
-                    for block in content:
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get("type") == "text" and block.get("text"):
-                            entries.append({"role": "assistant", "kind": "text", "text": str(block["text"]), "at": ts,
-                                            "model": message.get("model")})
-                        elif block.get("type") == "tool_use":
-                            entries.append({"role": "assistant", "kind": "tool_use", "name": str(block.get("name") or ""),
-                                            "text": json.dumps(block.get("input") or {}, ensure_ascii=False)[:4000],
-                                            "at": ts})
+            elif kind == "assistant" and isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "text" and block.get("text"):
+                        entries.append({"role": "assistant", "kind": "text", "text": str(block["text"]), "at": ts,
+                                        "model": message.get("model")})
+                    elif block.get("type") == "tool_use":
+                        entries.append({"role": "assistant", "kind": "tool_use", "name": str(block.get("name") or ""),
+                                        "text": json.dumps(block.get("input") or {}, ensure_ascii=False)[:4000], "at": ts})
             if len(entries) >= 2000:
                 break
     return entries
 
 
-def get_session(project: str, session: str, root: Path | None = None) -> dict:
-    """Full transcript for one session; `project`/`session` must be plain names."""
+# --------------------------------------------------------------------- OpenCode
+
+
+def _oc_connect(root: Path | None = None) -> sqlite3.Connection:
+    path = root or OPENCODE_DB
+    con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=3)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def _oc_model(raw: str | None) -> str:
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return ""
+    return str(data.get("id") or "")
+
+
+def _opencode_list(limit: int, query: str, root: Path | None) -> list[dict]:
+    if not (root or OPENCODE_DB).is_file():
+        return []
+    q = query.strip().lower()
+    try:
+        con = _oc_connect(root)
+    except sqlite3.Error:
+        return []
+    try:
+        rows = con.execute(
+            "select id, title, directory, time_created, time_updated, cost, model, tokens_input, tokens_output "
+            "from session where time_archived is null order by time_updated desc limit ?",
+            (min(limit * 3, 400),),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+    out: list[dict] = []
+    for row in rows:
+        title = row["title"] or row["id"]
+        directory = row["directory"] or ""
+        if q and q not in title.lower() and q not in directory.lower():
+            continue
+        out.append({
+            "source": "opencode",
+            "id": row["id"],
+            "project": Path(directory).name if directory else "opencode",
+            "project_path": directory,
+            "title": title[:_MAX_TITLE],
+            "summary": "",
+            "started_at": _from_ms(row["time_created"]),
+            "last_at": _from_ms(row["time_updated"]),
+            "size_kb": 0,
+            "cost": row["cost"],
+            "model": _oc_model(row["model"]),
+            "tokens": (row["tokens_input"] or 0) + (row["tokens_output"] or 0),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _opencode_transcript(session_id: str, root: Path | None) -> list[dict]:
+    con = _oc_connect(root)
+    try:
+        messages = con.execute(
+            "select id, data, time_created from message where session_id = ? order by time_created",
+            (session_id,),
+        ).fetchall()
+        if not messages:
+            return []
+        ids = [m["id"] for m in messages]
+        placeholders = ",".join("?" * len(ids))
+        parts = con.execute(
+            f"select message_id, data, time_created from part where message_id in ({placeholders}) order by time_created",
+            ids,
+        ).fetchall()
+    finally:
+        con.close()
+
+    by_message: dict[str, list[dict]] = {}
+    for part in parts:
+        try:
+            data = json.loads(part["data"])
+        except json.JSONDecodeError:
+            continue
+        by_message.setdefault(part["message_id"], []).append(data)
+
+    entries: list[dict] = []
+    for message in messages:
+        try:
+            meta = json.loads(message["data"])
+        except json.JSONDecodeError:
+            meta = {}
+        role = "user" if meta.get("role") == "user" else "assistant"
+        ts = _from_ms(message["time_created"])
+        for part in by_message.get(message["id"], []):
+            ptype = part.get("type")
+            if ptype == "text" and part.get("text"):
+                entries.append({"role": role, "kind": "text", "text": str(part["text"]), "at": ts,
+                                "model": meta.get("modelID")})
+            elif ptype == "tool":
+                state = part.get("state") or {}
+                entries.append({
+                    "role": "assistant", "kind": "tool_use", "name": str(part.get("tool") or "tool"),
+                    "text": json.dumps(state.get("input") or {}, ensure_ascii=False)[:4000],
+                    "at": ts,
+                })
+                if state.get("status") in ("completed", "error"):
+                    entries.append({
+                        "role": "tool", "kind": "tool_result", "name": str(part.get("tool") or "tool"),
+                        "text": str(state.get("output") or state.get("error") or "")[:8000],
+                        "error": state.get("status") == "error", "at": ts,
+                    })
+        if len(entries) >= 2000:
+            break
+    return entries
+
+
+# ------------------------------------------------------------------------ public
+
+
+def _claude_list(limit: int, query: str, root: Path | None) -> list[dict]:
+    base = root or CLAUDE_PROJECTS
+    if not base.is_dir():
+        return []
+    files = sorted(base.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    out: list[dict] = []
+    seen: set[str] = set()
+    q = query.strip().lower()
+    for path in files:
+        if len(out) >= limit:
+            break
+        if path.stem in seen:
+            continue
+        meta = _claude_meta(path)
+        if not meta:
+            continue
+        if q and q not in meta["title"].lower() and q not in (meta["project_path"] or "").lower():
+            continue
+        seen.add(path.stem)
+        out.append(meta)
+    return out
+
+
+def list_sessions(*, source: str = "all", limit: int = 60, query: str = "",
+                  claude_root: Path | None = None, opencode_db: Path | None = None) -> list[dict]:
+    """Most recently updated sessions across the supported local tools."""
+    items: list[dict] = []
+    if source in ("all", "claude"):
+        items += _claude_list(limit, query, claude_root)
+    if source in ("all", "opencode"):
+        items += _opencode_list(limit, query, opencode_db)
+    items.sort(key=lambda s: s.get("last_at") or "", reverse=True)
+    return items[:limit]
+
+
+def get_claude_session(project: str, session: str, root: Path | None = None) -> dict:
     base = root or CLAUDE_PROJECTS
     for value, label in ((project, "project"), (session, "session")):
         if not value or any(ch in value for ch in "\\/.."):
@@ -169,9 +310,54 @@ def get_session(project: str, session: str, root: Path | None = None) -> dict:
     path = base / project / f"{session}.jsonl"
     if not path.is_file():
         raise LookupError("会话文件不存在")
-    meta = _session_meta(path, base) or {"source": "claude", "id": session, "project": project, "title": session}
-    entries = _transcript(path)
+    meta = _claude_meta(path) or {"source": "claude", "id": session, "project": project, "title": session,
+                                  "project_path": "", "last_at": None}
+    entries = _claude_transcript(path)
+    return {**meta, "counts": _counts(entries), "entries": entries}
+
+
+def get_opencode_session(session_id: str, root: Path | None = None) -> dict:
+    if not session_id or any(ch in session_id for ch in "\\/.."):
+        raise ValueError("非法的 session 名称")
+    if not (root or OPENCODE_DB).is_file():
+        raise LookupError("OpenCode 数据库不存在")
+    con = _oc_connect(root)
+    try:
+        row = con.execute(
+            "select id, title, directory, time_created, time_updated, cost, model from session where id = ?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if not row:
+        raise LookupError("会话不存在")
+    entries = _opencode_transcript(session_id, root)
+    directory = row["directory"] or ""
+    return {
+        "source": "opencode",
+        "id": row["id"],
+        "project": Path(directory).name if directory else "opencode",
+        "project_path": directory,
+        "title": (row["title"] or row["id"])[:_MAX_TITLE],
+        "summary": "",
+        "started_at": _from_ms(row["time_created"]),
+        "last_at": _from_ms(row["time_updated"]),
+        "size_kb": 0,
+        "cost": row["cost"],
+        "model": _oc_model(row["model"]),
+        "counts": _counts(entries),
+        "entries": entries,
+    }
+
+
+def _counts(entries: list[dict]) -> dict:
     counts = {"user": 0, "assistant": 0, "tool": 0}
-    for e in entries:
-        counts[e["role"] if e["role"] in counts else "tool"] = counts.get(e["role"], 0) + 1
-    return {**meta, "counts": counts, "entries": entries}
+    for entry in entries:
+        role = entry.get("role")
+        counts[role if role in counts else "tool"] += 1
+    return counts
+
+
+# Backwards-compatible alias used by older tests/imports.
+def get_session(project: str, session: str, root: Path | None = None) -> dict:
+    return get_claude_session(project, session, root)
