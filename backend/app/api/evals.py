@@ -173,6 +173,18 @@ async def list_runs(suite_id: int, limit: int = 20, _: User = Depends(current_us
     return [run_dict(r) for r in rows]
 
 
+@router.get("/evals/recent-runs")
+async def recent_runs(limit: int = 50, _: User = Depends(current_user),
+                      session: AsyncSession = Depends(get_session)):
+    """所有套件的最近评测记录（报告页用）。"""
+    rows = (await session.execute(
+        select(EvalRun, EvalSuite.name)
+        .join(EvalSuite, EvalSuite.id == EvalRun.suite_id)
+        .order_by(EvalRun.id.desc()).limit(min(max(limit, 1), 200))
+    )).all()
+    return [{**run_dict(run), "suite_name": name} for run, name in rows]
+
+
 @router.get("/evals/runs/{run_id}")
 async def get_run(run_id: int, _: User = Depends(current_user), session: AsyncSession = Depends(get_session)):
     run = await session.get(EvalRun, run_id)

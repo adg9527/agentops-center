@@ -392,3 +392,20 @@ class EvalRun(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
+class ArtifactVersion(Base):
+    """任务产物文件的一个版本快照（类 git 的历史）。"""
+
+    __tablename__ = "artifact_versions"
+    __table_args__ = (Index("ix_artifact_task_path", "task_id", "path", "version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id"), index=True)
+    path: Mapped[str] = mapped_column(String(512), default="")   # 相对任务工作目录
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    encoding: Mapped[str] = mapped_column(String(16), default="text")  # text | base64
+    content: Mapped[str] = mapped_column(Text, default="")
+    note: Mapped[str] = mapped_column(String(128), default="")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)

@@ -14,26 +14,7 @@ const pages: RouteRecordRaw[] = [
   { path: 'skills', name: 'skills', component: () => import('../pages/Skills.vue') },
   { path: 'prompts', name: 'prompts', component: () => import('../pages/Prompts.vue') },
   { path: 'evals', name: 'evals', component: () => import('../pages/Evals.vue') },
-  {
-    path: 'reports',
-    name: 'reports',
-    component: () => import('../pages/Placeholder.vue'),
-    props: {
-      phase: 6,
-      title: '评测报告',
-      items: ['自动生成报告（历史快照）', 'PDF / Excel / JSON 导出', '报告版本、对比、检索与归档'],
-    },
-  },
-  {
-    path: 'versions',
-    name: 'versions',
-    component: () => import('../pages/Placeholder.vue'),
-    props: {
-      phase: 4,
-      title: '版本管理',
-      items: ['MCP / Skill / Agent / Prompt 统一版本体系', '版本快照、对比、发布、回滚、启停'],
-    },
-  },
+  { path: 'artifacts', name: 'artifacts', component: () => import('../pages/Artifacts.vue') },
 ]
 
 const router = createRouter({

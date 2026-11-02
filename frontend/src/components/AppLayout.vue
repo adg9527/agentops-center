@@ -9,7 +9,6 @@ import {
   DashboardOutlined,
   HistoryOutlined,
   ExperimentOutlined,
-  FileTextOutlined,
   LogoutOutlined,
   MessageOutlined,
   MonitorOutlined,
@@ -27,7 +26,7 @@ const route = useRoute()
 const live = useLiveStatus()
 const collapsed = ref(false)
 
-const ITEMS = [
+const ITEMS: { key: string; icon: any; label: string; phase?: number }[] = [
   { key: '/', icon: DashboardOutlined, label: '工作台' },
   { key: '/chat', icon: MessageOutlined, label: 'Agent 群聊' },
   { key: '/agents', icon: RobotOutlined, label: 'Agent 管理' },
@@ -38,8 +37,7 @@ const ITEMS = [
   { key: '/sessions', icon: HistoryOutlined, label: '本地会话' },
   { key: '/monitor', icon: MonitorOutlined, label: '执行监控' },
   { key: '/evals', icon: ExperimentOutlined, label: '自动化评测' },
-  { key: '/reports', icon: FileTextOutlined, label: '评测报告', phase: 6 },
-  { key: '/versions', icon: BranchesOutlined, label: '版本管理', phase: 4 },
+  { key: '/artifacts', icon: BranchesOutlined, label: '评测报告 / 版本' },
   { key: '/settings', icon: SettingOutlined, label: '系统设置' },
 ]
 

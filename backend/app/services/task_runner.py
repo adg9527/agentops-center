@@ -130,6 +130,13 @@ class TaskRunner:
         await self._set_task(task_id, status=final.value, finished_at=utcnow(), error=err)
         await record_event(trace_id=trace_id, span_id=root, parent_span_id=parent_task_span, event_type=f"task.{final.value}", task_id=task_id,
                            name=task.title, status="ok" if final == TaskStatus.completed else "error", output_summary=err)
+        # 产物快照：任务结束就把工作目录里的文件记一个版本（内容未变则自动跳过）
+        try:
+            from .artifacts import snapshot_task
+
+            await snapshot_task(task_id, note=f"task {final.value}")
+        except Exception:  # 快照失败不能影响任务结果
+            log.exception("artifact snapshot failed for task %s", task_id)
 
     async def _run_agent(self, task: Task, first_run: AgentRun, cancel: asyncio.Event) -> str:
         run = first_run
