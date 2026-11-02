@@ -30,7 +30,7 @@ from .task_runner import runner
 from .trace import new_span_id, record_event, task_span_id
 from ..chains import planner as chain_planner
 from ..chains import summarizer as chain_summarizer
-from ..chains.callbacks import PlatformCallbackHandler
+from ..chains.callbacks import build_callbacks, usage_totals
 from ..chains.llm import llm_available
 from ..chains.plan import PlanError, validate_plan
 
@@ -560,7 +560,7 @@ class Orchestrator:
         The chain runs in-process (no subtask, no external CLI), but it still records an
         AgentRun row so token/cost accounting and the run history stay uniform.
         """
-        handler = PlatformCallbackHandler()
+        callbacks = build_callbacks()
         started = utcnow()
         history = ""
         done: list[tuple[TaskStep, str]] = []
@@ -580,7 +580,7 @@ class Orchestrator:
             if st.kind == "plan":
                 plan = await chain_planner.make_plan(
                     request=root.prompt, members=members, history=history,
-                    max_steps=MAX_PLAN_STEPS, callbacks=[handler],
+                    max_steps=MAX_PLAN_STEPS, callbacks=callbacks,
                 )
                 names = {a.id: a.name for _m, a in members}
                 text = json.dumps({"steps": [
@@ -591,14 +591,14 @@ class Orchestrator:
                 text = await chain_summarizer.summarize_results(
                     request=root.prompt,
                     results=[(x.title, n, x.output_text or f"（{x.status}）{x.error or ''}") for x, n in done],
-                    callbacks=[handler],
+                    callbacks=callbacks,
                 )
         except Exception as e:  # a failing chain fails this step, it must not kill the root task
             log.exception("chain step %s (%s) failed", st.id, st.kind)
             error = f"{type(e).__name__}: {e}"[:2000]
 
         finished = utcnow()
-        usage = handler.usage
+        usage = usage_totals(callbacks, events=callbacks[0])
         async with session_factory()() as s:
             row = await s.get(TaskStep, st.id)
             row.output_text = text

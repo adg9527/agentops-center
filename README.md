@@ -11,7 +11,7 @@
   <img alt="Status" src="https://img.shields.io/badge/status-phase%203%20wip-orange">
 </p>
 
-AgentOps Center 不是又一个 Agent 框架，而是**给已有的 Agent 做一个统一的“运维与协作控制台”**。它不替换 Claude Code / OpenCode 的交互方式，也不要求你把 Agent 重写成 API —— 平台直接驱动本机 CLI 子进程，把流式输出、工具调用、Token 与成本解析成结构化事件；同时内置一套基于 **LangChain** 的平台原生智能体，并用 LangChain 的 LCEL 链承担多 Agent 的规划与汇总。
+AgentOps Center 不是又一个 Agent 框架，而是**给已有的 Agent 做一个统一的“运维与协作控制台”**。它不替换 Claude Code / OpenCode 的交互方式，也不要求你把 Agent 重写成 API —— 平台直接驱动本机 CLI 子进程，把流式输出、工具调用、Token 与成本解析成结构化事件；同时内置一套基于 **LangChain** 的平台原生智能体，并用 LangChain 的 `create_agent`（结构化输出）承担多 Agent 的规划与汇总。
 
 ---
 
@@ -89,21 +89,21 @@ flowchart LR
 
 | 组件 | 作用 |
 | --- | --- |
-| `llm.py` | 统一构造 ChatModel：DeepSeek（OpenAI 兼容）、OpenAI、Anthropic；未配置密钥时返回 `None`，编排自动回退到“主控 Agent 出计划”的旧路径 |
-| `planner.py` | LCEL：`ChatPromptTemplate | model.with_structured_output(Plan)`，模型被约束成 `{steps:[{id,agent,role,title,instruction,depends_on}]}`，不再靠正则从自由文本里抠 JSON |
-| `plan.py` | 计划校验：成员是否存在、id 是否重复、依赖是否成环；链式输出与旧 JSON 解析共用同一份规则 |
-| `summarizer.py` | LCEL：`SUMMARY_PROMPT | model | StrOutputParser()`，把各步骤结果汇总成最终报告 |
-| `callbacks.py` | `AsyncCallbackHandler`：把每次模型调用、工具调用投影成平台事件，累计 token 与耗时 |
+| `llm.py` | `init_chat_model("provider:model", ...)`：DeepSeek / OpenAI / Anthropic 一套写法；未配置密钥时返回 `None`，编排自动回退到“主控 Agent 出计划”的旧路径 |
+| `planner.py` | `create_agent(model, tools=[], system_prompt=..., response_format=Plan)`：结构化输出由 LangChain 约束并自动重试校验失败，不再靠正则从自由文本里抠 JSON |
+| `plan.py` | 计划校验：成员是否存在、id 是否重复、依赖是否成环；Agent 输出与旧 JSON 解析共用同一份规则 |
+| `summarizer.py` | `create_agent(...)` 无工具版，取最后一条 AI 消息作为最终报告 |
+| `callbacks.py` | `UsageMetadataCallbackHandler` 统计 token，另加一个 `AsyncCallbackHandler` 把模型/工具调用投影成平台事件 |
 | `runnable.py` | `AdapterRunnable`：把任意 AgentAdapter 包装成 `Runnable`，让 CLI / HTTP / 原生 Agent 走同一条执行路径 |
 
-编排产出的步骤依旧落在 `TaskStep` 表里，由 DAG 调度器执行；规划链本身也会写一条 `AgentRun`，所以 Token、成本、历史在界面上与外部 Agent 一视同仁。链式调用失败只会让当前步骤失败，不会拖垮整个协作任务。
+编排产出的步骤依旧落在 `TaskStep` 表里，由 DAG 调度器执行；规划 Agent 本身也会写一条 `AgentRun`，所以 Token、成本、历史在界面上与外部 Agent 一视同仁。规划/汇总失败只会让当前步骤失败，不会拖垮整个协作任务。
 
 ## 技术栈
 
 | 层 | 选型 |
 | --- | --- |
 | 后端 | Python 3.11+ · FastAPI · SQLAlchemy 2.0 (async) · Pydantic Settings · PyJWT · Argon2 · cryptography |
-| 编排 / Agent | LangChain 1.x（LCEL、`create_agent`、结构化输出、回调）· 本机 CLI 子进程（Claude Code、OpenCode、Codex）· OpenAI 兼容接口 |
+| 编排 / Agent | LangChain 1.4（`create_agent`、`init_chat_model`、`response_format` 结构化输出、`UsageMetadataCallbackHandler`）· 本机 CLI 子进程（Claude Code、OpenCode、Codex）· OpenAI 兼容接口 |
 | 存储 | SQLite（默认，零依赖）· PostgreSQL 16（可选，见 `docker-compose.yml`） |
 | 前端 | Vue 3 · TypeScript · Vite · Ant Design Vue 4 · ECharts · Vue Router |
 | 测试 | pytest（离线用例 + `real_agent` 真实调用用例）· `vue-tsc` 类型检查 |

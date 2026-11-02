@@ -1,4 +1,8 @@
-"""Structured-output schemas for the orchestration chains."""
+"""Structured-output schemas for the orchestration agents.
+
+Docstrings and field descriptions are what the model actually sees in the JSON
+schema, so they are written for the model, not just for humans.
+"""
 
 from typing import Literal
 
@@ -14,11 +18,11 @@ class PlannedStep(BaseModel):
     agent: str = Field(description="执行该步骤的成员名称，必须来自给定的成员名单")
     role: Role = Field(default="executor", description="该步骤的角色：analyst/executor/reviewer/summarizer")
     title: str = Field(default="", description="不超过 30 字的简短标题；留空时用 instruction 前 60 字")
-    instruction: str = Field(description="交给该成员的具体工作要求")
+    instruction: str = Field(description="交给该成员的具体工作要求：目标、输入、产出形式")
     depends_on: list[str] = Field(default_factory=list, description="必须先完成的步骤 id，无依赖留空")
 
 
 class Plan(BaseModel):
-    """A validated multi-agent plan."""
+    """A multi-agent plan: the tasks to run and who runs them."""
 
     steps: list[PlannedStep] = Field(description="按执行顺序排列的步骤；无依赖的步骤会并行执行")

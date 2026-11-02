@@ -20,6 +20,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import AIMessage
 from langchain_core.tools import StructuredTool, ToolException
 
+from ..chains.llm import build_chat_model
 from .base import AdapterEvent, AgentAdapter, ConfigField, ConnectionResult, Emit, Level, RunRequest, RunResult
 
 READ_TOOLS = ["list_files", "read_file", "search_text"]
@@ -256,20 +257,23 @@ class LangChainAdapter(AgentAdapter):
         return None
 
     def _llm(self, req: RunRequest, key: str):
+        """Build the model through the shared `init_chat_model` factory."""
         c = req.config
-        if (c.get("provider") or "openai_compatible") == "anthropic":
-            from langchain_anthropic import ChatAnthropic
-
-            kw = {"base_url": c["base_url"]} if c.get("base_url") else {}
-            return ChatAnthropic(model=req.model, api_key=key, temperature=c.get("temperature", 0.2),
-                                 timeout=req.timeout_sec, max_retries=1, **kw)
-        from langchain_openai import ChatOpenAI
-
-        kw = {}
-        if _is_loopback(c.get("base_url") or ""):
-            kw["http_async_client"] = httpx.AsyncClient(trust_env=False, timeout=req.timeout_sec)
-        return ChatOpenAI(model=req.model, base_url=c.get("base_url"), api_key=key, temperature=c.get("temperature", 0.2),
-                          timeout=req.timeout_sec, max_retries=1, **kw)
+        provider = "anthropic" if (c.get("provider") or "openai_compatible") == "anthropic" else "openai"
+        kwargs = {}
+        if provider == "openai" and _is_loopback(c.get("base_url") or ""):
+            # a loopback endpoint (vLLM / Ollama) must not be routed through a system proxy
+            kwargs["http_async_client"] = httpx.AsyncClient(trust_env=False, timeout=req.timeout_sec)
+        return build_chat_model(
+            provider=provider,
+            model=req.model,
+            api_key=key,
+            base_url=c.get("base_url") or None,
+            temperature=c.get("temperature", 0.2),
+            timeout=req.timeout_sec,
+            max_retries=1,
+            **kwargs,
+        )
 
     def build_model(self, req: RunRequest, key: str):
         """Overridable seam (tests inject a scripted chat model)."""
@@ -284,7 +288,11 @@ class LangChainAdapter(AgentAdapter):
         if bad:
             return RunResult(ok=False, error=f"未知工具: {bad}")
         tools = build_tools(req.workdir, c.get("tools") or [])
-        agent = create_agent(self.build_model(req, key), tools, system_prompt=c.get("system_prompt") or None)
+        agent = create_agent(
+            model=self.build_model(req, key),
+            tools=tools,
+            system_prompt=c.get("system_prompt") or None,
+        )
         cb = TraceCallback(emit, req.model)
         await emit(AdapterEvent(kind="session.started", name="langchain agent",
                                 attributes={"model": req.model, "tools": [t.name for t in tools], "provider": c.get("provider"),

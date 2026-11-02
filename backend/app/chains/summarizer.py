@@ -1,25 +1,36 @@
-"""Summariser chain: step results -> final report."""
+"""Summariser agent: step results -> final report.
+
+A plain `create_agent` (no tools, no structured output); the report is the last
+AI message of the agent result.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
+from langchain.agents import create_agent
+from langchain.messages import HumanMessage
 from langchain_core.language_models import BaseChatModel
-from langchain_core.output_parsers import StrOutputParser
 
-from .callbacks import PlatformCallbackHandler
 from .llm import orchestrator_model
-from .prompts import SUMMARY_PROMPT
+from .prompts import SUMMARY_SYSTEM, SUMMARY_USER, format_results
 
 
 def build_summarizer(model: BaseChatModel):
-    """`Runnable` that maps prompt variables to the report text."""
-    return SUMMARY_PROMPT | model | StrOutputParser()
+    return create_agent(model=model, tools=[], system_prompt=SUMMARY_SYSTEM)
 
 
-def _clip(text: str | None, limit: int = 4000) -> str:
-    text = text or ""
-    return text if len(text) <= limit else text[:limit] + f"\n…（已截断，原文 {len(text)} 字）"
+def _message_text(message: Any) -> str:
+    """Prefer the documented `.text` accessor, fall back to string content."""
+    text = getattr(message, "text", None)
+    if isinstance(text, str) and text:
+        return text
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(block.get("text", "") for block in content if isinstance(block, dict))
+    return str(content)
 
 
 async def summarize_results(
@@ -28,11 +39,18 @@ async def summarize_results(
     results: list[tuple[str, str, str]],
     model: BaseChatModel | None = None,
     callbacks: list[Any] | None = None,
+    agent: Any | None = None,
 ) -> str:
     """`results` is `[(title, agent_name, output), ...]`; returns the report text."""
-    model = model or orchestrator_model()
-    if model is None:
-        raise RuntimeError("未配置编排模型（AGENTOPS_ORCHESTRATOR_*），无法生成汇总")
-    body = "\n\n".join(f"### {title}（{agent}）\n{_clip(output)}" for title, agent, output in results)
-    chain = build_summarizer(model)
-    return await chain.ainvoke({"request": request, "results": body}, config={"callbacks": callbacks or [PlatformCallbackHandler()]})
+    if agent is None:
+        model = model or orchestrator_model()
+        if model is None:
+            raise RuntimeError("未配置编排模型（AGENTOPS_ORCHESTRATOR_*），无法生成汇总")
+        agent = build_summarizer(model)
+
+    message = SUMMARY_USER.format(request=request, results=format_results(results))
+    result = await agent.ainvoke({"messages": [HumanMessage(message)]}, config={"callbacks": callbacks or []})
+    messages = result.get("messages") or []
+    if not messages:
+        raise RuntimeError("汇总 agent 没有返回任何消息")
+    return _message_text(messages[-1])

@@ -2,27 +2,40 @@
 
 本次重构把两条主线换成更明确的形态，功能面保持不变：
 
-1. **后端**：保留 Claude Code / OpenCode / Codex / HTTP 四类适配器，但把协作编排与模型调用收进 LangChain（LCEL + 结构化输出 + 回调）；
+1. **后端**：保留 Claude Code / OpenCode / Codex / HTTP 四类适配器，但把协作编排与模型调用收进 LangChain（`create_agent` + `response_format` 结构化输出 + 官方 usage 回调）；
 2. **前端**：从 React 18 + Ant Design 5 整体重写为 Vue 3 + TypeScript + Vite + Ant Design Vue 4。
 
-## 1. 后端：编排层迁到 LangChain
+## 1. 后端：编排层迁到 LangChain（1.4，按官方文档写法）
 
 ### 1.1 新增 `backend/app/chains/`
 
 | 文件 | 职责 |
 | --- | --- |
-| `llm.py` | 统一构造 ChatModel：`deepseek`（OpenAI 兼容）、`openai`、`anthropic`；同时提供 `llm_available()` / `orchestrator_model()`，未配置密钥时返回 `None` |
+| `llm.py` | `init_chat_model("provider:model", ...)` 统一构造（`langchain-deepseek` / `langchain-openai` / `langchain-anthropic`）；提供 `llm_available()` / `orchestrator_model()`，未配置密钥时返回 `None` |
 | `schemas.py` | `Plan` / `PlannedStep`（Pydantic），作为 `with_structured_output` 的 schema |
 | `prompts.py` | `PLAN_PROMPT`、`SUMMARY_PROMPT`（`ChatPromptTemplate`），以及成员名单渲染 |
-| `planner.py` | `PLAN_PROMPT \| model.with_structured_output(Plan)`，输出再经 `validate_plan` 校验 |
-| `summarizer.py` | `SUMMARY_PROMPT \| model \| StrOutputParser()` |
+| `planner.py` | `create_agent(model, tools=[], system_prompt=..., response_format=Plan)`，从 `structured_response` 取计划，再经 `validate_plan` 校验 |
+| `summarizer.py` | `create_agent(model, tools=[], system_prompt=...)`，取最后一条 AI 消息 |
 | `plan.py` | 计划校验：成员存在性、id 唯一、依赖成环；旧 JSON 解析路径复用同一份规则 |
-| `callbacks.py` | `PlatformCallbackHandler`：把 `on_llm_*` / `on_tool_*` 投影为平台事件，并累计 token 与耗时 |
+| `callbacks.py` | `UsageMetadataCallbackHandler`（官方 token 统计）+ `PlatformCallbackHandler`（`on_llm_*` / `on_tool_*` 投影为平台事件） |
 | `runnable.py` | `AdapterRunnable`：任意 `AgentAdapter` 的 `Runnable` 包装，`run_adapter()` 为统一入口 |
+
+### 1.1.1 对齐的官方 API（LangChain 1.4）
+
+| 用法 | 出处 |
+| --- | --- |
+| `from langchain.chat_models import init_chat_model` → `init_chat_model("deepseek:deepseek-chat", api_key=..., base_url=...)` | Models → Initialize a model |
+| `from langchain.agents import create_agent` → `create_agent(model=..., tools=[], system_prompt=..., response_format=Plan)` | Overview → Create an agent；Structured output → Response format |
+| 结果取 `result["structured_response"]`（计划）与 `result["messages"][-1]`（汇总） | Structured output / Agents |
+| `from langchain.messages import HumanMessage, AIMessage` | Messages |
+| `from langchain_core.callbacks import UsageMetadataCallbackHandler` 统计 token | Models → Token usage |
+| `await agent.ainvoke({"messages": [...]}, config={"callbacks": [...]})` | Models → Invoke / Invocation config |
+
+官方明确说明：`create_agent` 的结构化输出带校验失败重试，而 `prompt | model | parser` 这类链没有；因此规划与汇总都走 agent 形态，而不是手写链。
 
 ### 1.2 行为变化
 
-- 「自动协作」的**规划**与**汇总**不再派给主控 Agent 跑子任务，而是由平台的 LCEL 链直接完成；链式调用同样写 `AgentRun`（含 token / 模型 / 耗时），界面上与外部 Agent 一致。
+- 「自动协作」的**规划**与**汇总**不再派给主控 Agent 跑子任务，而是由平台自己的 LangChain Agent 完成；链式调用同样写 `AgentRun`（含 token / 模型 / 耗时），界面上与外部 Agent 一致。
 - 未配置 `AGENTOPS_ORCHESTRATOR_*` 或缺少密钥时，自动退回旧路径（主控 Agent 出计划 → `parse_plan` 解析 JSON），因此离线测试与旧部署不受影响。
 - 所有 Agent 执行从 `adapter.run(...)` 收敛到 `run_adapter(...)` → `AdapterRunnable.ainvoke(...)`，适配器只关心自己的流协议。
 - 计划校验统一到 `chains/plan.py`，`services/collab.py` 的 `parse_plan` 变成薄封装，错误信息与链式路径保持一致。
@@ -60,7 +73,7 @@ frontend/src/
 
 - `npx vue-tsc --noEmit`：0 错误（`strict` + `noUnusedLocals`）。
 - `npm run build`：产出 `dist/` 与 `.vite/manifest.json`，后端 `_render_shell` 直接消费该 manifest。
-- 后端 `uv run pytest`：52 个用例通过（其中 `tests/test_chains.py` 覆盖计划校验、结构化输出链、汇总链与 `AdapterRunnable`，全部离线）。
+- 后端 `uv run pytest`：57 个用例通过（其中 `tests/test_chains.py` 覆盖计划校验、结构化输出链、汇总链与 `AdapterRunnable`，全部离线）。
 
 ## 3. 已知差异
 
