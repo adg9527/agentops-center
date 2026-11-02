@@ -1,0 +1,12 @@
+# Normalize line endings in the repository; check out native EOL on Windows.
+* text=auto
+
+# Windows launchers must keep CRLF to stay double-clickable.
+*.bat text eol=crlf
+
+# Keep binaries untouched.
+*.png binary
+*.ico binary
+*.jpg binary
+*.woff binary
+*.woff2 binary

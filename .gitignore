@@ -1,0 +1,17 @@
+# runtime data: database, encryption keys, task workspaces — never commit
+data/
+backend/.env
+
+backend/.venv/
+__pycache__/
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+*.log
+
+# build artifacts
+
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
+*.pyc
+backend/.pytest_cache/
