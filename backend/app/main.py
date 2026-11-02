@@ -24,7 +24,10 @@ async def lifespan(app: FastAPI):
     await create_all()
     await recover_collab()
     await recover_interrupted()
-    yield
+    from .mcp_server import mcp_session_manager
+
+    async with mcp_session_manager():
+        yield
     await orchestrator.shutdown()
     await runner.shutdown()
 
@@ -44,6 +47,13 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     async def health():
         return {"ok": True}
+
+    # MCP server (Streamable HTTP) for external AI tools: POST/GET /mcp with a platform JWT.
+    from .mcp_server import build_asgi_app
+
+    mcp_app = build_asgi_app()
+    if mcp_app is not None:
+        app.mount("/mcp", mcp_app)
 
     # Serve the built frontend (npm run build) from the same origin when present.
     dist = PROJECT_DIR / "frontend" / "dist"

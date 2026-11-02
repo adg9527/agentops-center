@@ -71,6 +71,45 @@ AgentOps Center 把这些收敛成一个本地 Web 平台：**Agent 有台账、
 
 **WorkBuddy 的现状（实测 5.9.3）**：它在本机只开了 `127.0.0.1:18488` 的探针接口（`GET /workbuddy/probe` → `{"ok":true,"app":"workbuddy-desktop","version":"5.9.3"}`），其余路径全部 404；`resources/wb-guest-sdk/wb.js` 是给内嵌网页用的 postMessage 桥（`wb:endpoint` / `wb:event` / `session_hello`），不是对外的对话 API。它的 Agent 引擎是 ACP（`initialize` / `session/load`，带 `mcpServers`），模型侧走 OpenAI 兼容接口（内部 `127.0.0.1:52741/v1/chat/completions`）。因此目前**无法把 WorkBuddy 当作 Agent 接进来**；可行的两个方向是：给 WorkBuddy 配 MCP Server（由 AgentOps 提供工具），或让 AgentOps 暴露一个 OpenAI 兼容网关给 WorkBuddy 当自定义模型。
 
+### AgentOps 作为 MCP Server
+
+平台自己也能被别的 AI 工具调用：`app/mcp_server.py` 用官方 MCP Python SDK（`mcp>=2`）暴露 7 个工具。
+
+| 工具 | 作用 |
+| --- | --- |
+| `list_agents` / `get_agent` | 查已接入的 Agent 与配置（不含密钥） |
+| `list_tasks` / `get_task` | 查最近任务、任务详情（各 Agent 结果 + 事件时间线） |
+| `create_task` | 派发任务（需要 operator 及以上令牌） |
+| `list_events` | 最近的执行事件 |
+| `dashboard_summary` | Agent 数、任务状态分布、成本概览 |
+
+两种传输：
+
+```powershell
+# 1) Streamable HTTP：挂在后端 /mcp，用平台 JWT
+#    POST http://127.0.0.1:8000/mcp/   Authorization: Bearer <token>
+#    token 来自 POST /api/auth/login
+
+# 2) stdio：由客户端拉起本地进程
+cd backend; uv run python -m app.mcp_server
+```
+
+在 Claude Code / WorkBuddy 等 MCP 客户端里配置（HTTP 方式）：
+
+```json
+{
+  "mcpServers": {
+    "agentops": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp/",
+      "headers": { "Authorization": "Bearer <你的 JWT>" }
+    }
+  }
+}
+```
+
+已用官方客户端（`mcp` 2.3 的 `streamable_http_client`）实测握手：`agentops-center` 返回 7 个工具，`dashboard_summary` / `list_agents` 可正常调用。
+
 ## 系统架构
 
 ```mermaid
