@@ -140,10 +140,16 @@ class ClaudeCodeAdapter(AgentAdapter):
     description = "通过 claude -p --output-format stream-json 驱动本机 Claude Code，默认隔离用户级设置/MCP 并仅开放只读工具。"
     config_fields = [
         ConfigField("executable", "可执行文件", default="claude", help="命令名或绝对路径"),
-        ConfigField("tools", "可用工具", "string_list", default=["Read", "Glob", "Grep"],
-                    help="--tools。Agent 只能看到这些工具。Write/Edit/Bash 属于高风险工具"),
-        ConfigField("allowed_tools", "免审批工具", "string_list", default=["Read", "Glob", "Grep"],
-                    help="--allowedTools。不在此列表中的工具调用会被拒绝（非交互模式无人工批准）"),
+        ConfigField("tools", "可用工具", "string_list",
+                    default=["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+                    help="--tools。留空则不限制（用 CLI 默认工具集）；Bash/Write/Edit 属于高风险工具，会出现在风险提示里"),
+        ConfigField("allowed_tools", "免审批工具", "string_list",
+                    default=["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+                    help="--allowedTools。非交互模式下不在白名单里的调用会被直接拒绝；要能干活得有 Write/Edit/Bash"),
+        ConfigField("permission_mode", "权限模式", type="select", default="acceptEdits",
+                    options=["default", "acceptEdits", "plan", "bypassPermissions"],
+                    help="--permission-mode。default 在无人值守时等于全部拒绝；acceptEdits 自动接受文件编辑；"
+                         "bypassPermissions 全部放行（危险）"),
         ConfigField("isolate", "隔离用户级配置", "bool", default=True,
                     help="--setting-sources project --strict-mcp-config：不加载用户全局插件/MCP/CLAUDE.md，降低成本并避免越权"),
         ConfigField("max_turns", "最大轮数", "number", default=20),
@@ -187,12 +193,15 @@ class ClaudeCodeAdapter(AgentAdapter):
 
     def build_argv(self, exe: str, req: RunRequest) -> list[str]:
         c = req.config
-        argv = [exe, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default",
+        mode = c.get("permission_mode") or "acceptEdits"
+        argv = [exe, "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", mode,
                 "--no-session-persistence"]
         if c.get("isolate", True):
             argv += ["--setting-sources", "project", "--strict-mcp-config"]
         tools = c.get("tools") or []
-        argv += ["--tools", *tools] if tools else ["--tools", ""]
+        # 留空表示“用 CLI 默认工具集”，绝不能传 --tools ""（那会把内置工具全关掉）
+        if tools:
+            argv += ["--tools", *tools]
         if c.get("allowed_tools"):
             argv += ["--allowedTools", *c["allowed_tools"]]
         if req.model:

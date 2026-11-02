@@ -8,7 +8,7 @@ from pathlib import Path
 from .base import AdapterEvent, AgentAdapter, ConfigField, ConnectionResult, Emit, Level, RunRequest, RunResult
 from .cli_runner import resolve_executable, run_streaming, run_version
 
-DEFAULT_PERMISSION = {"edit": "deny", "bash": "deny", "webfetch": "deny"}
+DEFAULT_PERMISSION = {"edit": "allow", "bash": "allow", "webfetch": "deny"}
 # Windows CreateProcess command line limit is 32767 chars; keep headroom for other args.
 _MAX_ARGV_PROMPT = 24000
 
@@ -131,7 +131,8 @@ class OpenCodeAdapter(AgentAdapter):
         ConfigField("executable", "可执行文件", default="opencode", help="自动解析为原生 opencode.exe，避免经由 cmd.exe"),
         ConfigField("agent", "OpenCode Agent", default="", help="--agent，可留空"),
         ConfigField("permission", "权限配置", "json", default=DEFAULT_PERMISSION,
-                    help='OpenCode permission 配置，例如 {"edit":"deny","bash":"deny"}；"allow" 属于高风险'),
+                    help='OpenCode permission 配置：edit/bash 默认 allow（否则非交互模式下直接被拒、干不了活），'
+                         'webfetch 默认 deny；改成 deny 会退回只读'),
         ConfigField("pure", "禁用外部插件", "bool", default=False, help="--pure"),
         ConfigField("OPENCODE_API_KEY", "Provider API Key (可选)", secret=True,
                     help="一般留空，使用 opencode providers 已配置的凭据"),

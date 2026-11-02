@@ -85,15 +85,27 @@ def test_codex_parser_documented_events():
     assert p.result.input_tokens == 15 and p.got_turn_end
 
 
-def test_claude_argv_is_least_privilege(tmp_path):
+def test_claude_argv_allows_real_work(tmp_path):
+    """默认要给 Write/Edit/Bash 权限，否则非交互模式下 Agent 什么都干不了。"""
     a = ClaudeCodeAdapter()
     req = RunRequest(prompt="hi", workdir=tmp_path, config=a.defaults(), secrets={}, model="haiku", timeout_sec=60)
     argv = a.build_argv("claude", req)
-    assert "hi" not in argv  # prompt goes via stdin, never argv
-    assert argv[argv.index("--tools") + 1: argv.index("--allowedTools")] == ["Read", "Glob", "Grep"]
+
+    assert "hi" not in argv  # prompt 走 stdin，不进 argv
+    tools = argv[argv.index("--tools") + 1: argv.index("--allowedTools")]
+    assert {"Read", "Write", "Edit", "Bash"} <= set(tools)
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert "--strict-mcp-config" in argv and "--setting-sources" in argv
-    assert risk_warnings("claude_code", a.defaults()) == []
-    assert risk_warnings("claude_code", {**a.defaults(), "tools": ["Bash"]})
+
+    # 空 tools 不能被翻译成 `--tools ""`（那会把内置工具全关掉，只剩空壳）
+    empty = RunRequest(prompt="hi", workdir=tmp_path,
+                       config={**a.defaults(), "tools": [], "allowed_tools": []}, secrets={}, model="", timeout_sec=60)
+    argv_empty = a.build_argv("claude", empty)
+    assert "--tools" not in argv_empty
+    assert "--allowedTools" not in argv_empty
+
+    # 放开写/执行属于高风险，UI 必须给提示
+    assert risk_warnings("claude_code", a.defaults())
     assert risk_warnings("opencode", {"permission": {"bash": "allow"}})
 
 
