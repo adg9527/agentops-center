@@ -44,7 +44,7 @@ const taskId = ref<number | null>(null)
 const graph = ref<GraphData | null>(null)
 const tree = ref<any>(null)
 const loading = ref(false)
-const tab = ref<'graph' | 'tree'>('graph')
+const loadError = ref('')
 const graphEl = ref<HTMLDivElement | null>(null)
 const treeEl = ref<HTMLDivElement | null>(null)
 
@@ -69,6 +69,10 @@ const TYPE_COLOR = { task: '#722ed1', agent: '#1677ff' } as const
 
 const percent = computed(() => Math.round((graph.value?.stats.progress ?? 0) * 100))
 const hasGraph = computed(() => !!graph.value && graph.value.nodes.length > 1)
+const hasTree = computed(() => {
+  const kids = tree.value?.children
+  return Array.isArray(kids) && kids.length > 0 && kids[0]?.type !== 'empty'
+})
 
 function nodeColor(n: GraphNode): string {
   if (n.type === 'task') return TYPE_COLOR.task
@@ -76,7 +80,7 @@ function nodeColor(n: GraphNode): string {
   return STATUS_COLOR[n.status ?? ''] ?? '#d9d9d9'
 }
 
-/** Wait until the ref exists AND is laid out: echarts renders a 0×0 canvas inside a hidden tab pane. */
+/** Wait until the ref exists AND is laid out: echarts renders a 0×0 canvas inside a hidden container. */
 function waitForRef(target: { value: HTMLDivElement | null }, tries = 60): Promise<HTMLDivElement | null> {
   return new Promise((resolve) => {
     let left = tries
@@ -114,6 +118,7 @@ async function loadGraph() {
     return
   }
   loading.value = true
+  loadError.value = ''
   try {
     const [g, t] = await Promise.all([
       api<GraphData>(`/api/graph/task/${taskId.value}`),
@@ -122,11 +127,15 @@ async function loadGraph() {
     graph.value = g
     tree.value = t
     await nextTick()
-    if (tab.value === 'graph') await renderGraph()
-    else await renderTree()
-  } catch {
+    await renderGraph()
+    await renderTree()
+  } catch (e: any) {
     graph.value = null
     tree.value = null
+    loadError.value =
+      e?.status === 404
+        ? '接口返回 404：当前后端还是旧版本，请重启后端（uvicorn）后刷新。'
+        : `图数据加载失败：${e?.message ?? e}`
   } finally {
     loading.value = false
   }
@@ -220,9 +229,9 @@ async function renderTree() {
           type: 'tree',
           data: [tree.value],
           top: '4%',
-          left: '10%',
+          left: '8%',
           bottom: '4%',
-          right: '22%',
+          right: '24%',
           symbolSize: 10,
           orient: 'LR',
           label: { position: 'left', verticalAlign: 'middle', align: 'right', fontSize: 12 },
@@ -240,11 +249,6 @@ async function renderTree() {
 }
 
 watch(taskId, () => loadGraph())
-watch(tab, async () => {
-  await nextTick()
-  if (tab.value === 'graph') await renderGraph()
-  else await renderTree()
-})
 
 useLive((msg) => {
   if (msg.topic === 'task_updated' || msg.topic === 'run_updated') {
@@ -273,9 +277,57 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <a-card title="任务关系图 / 思维导图" :bordered="false">
-    <template #extra>
-      <a-space>
+  <div>
+    <a-card title="任务关系图" :bordered="false">
+      <template #extra>
+        <a-space>
+          <a-select
+            v-model:value="taskId"
+            show-search
+            option-filter-prop="label"
+            placeholder="选择任务"
+            style="width: 280px"
+            :loading="loading"
+          >
+            <a-select-option v-for="t in tasks" :key="t.id" :value="t.id" :label="`#${t.id} ${t.title}`">
+              #{{ t.id }} {{ t.title }}
+            </a-select-option>
+          </a-select>
+          <a-button size="small" :loading="loading" @click="loadGraph">刷新</a-button>
+        </a-space>
+      </template>
+
+      <a-alert v-if="loadError" type="error" show-icon :message="loadError" style="margin-bottom: 12px" />
+      <a-empty v-else-if="!taskId" description="还没有任务，先到「任务中心」派一个" />
+
+      <template v-else>
+        <a-space wrap style="margin-bottom: 12px">
+          <StatusTag v-if="graph" :status="graph.task.status" />
+          <a-tag color="purple">任务 #{{ taskId }}</a-tag>
+          <a-tag>完成 {{ graph?.stats.done ?? 0 }}/{{ graph?.stats.total ?? 0 }}</a-tag>
+          <a-tag v-if="graph?.stats.running" color="processing">进行中 {{ graph.stats.running }}</a-tag>
+          <a-tag v-if="graph?.stats.failed" color="error">失败 {{ graph.stats.failed }}</a-tag>
+          <a-progress :percent="percent" size="small" style="width: 200px" />
+        </a-space>
+
+        <a-alert
+          v-if="!hasGraph && !loadError"
+          type="info"
+          show-icon
+          style="margin-bottom: 12px"
+          message="这个任务还没有可展示的协作结构"
+          description="任务是单人执行且尚未产生运行记录，或者协作步骤还没拆分出来；派发后会自动出现节点与连线。"
+        />
+
+        <div ref="graphEl" style="height: 420px; width: 100%" />
+        <a-typography-text type="secondary" style="font-size: 12px">
+          实线＝分配，虚线＝依赖，紫色粗线＝交接；拖拽节点、滚轮缩放可查看布局。
+        </a-typography-text>
+      </template>
+    </a-card>
+
+    <a-card title="任务思维导图" :bordered="false" style="margin-top: 16px">
+      <template #extra>
         <a-select
           v-model:value="taskId"
           show-search
@@ -288,45 +340,24 @@ onBeforeUnmount(() => {
             #{{ t.id }} {{ t.title }}
           </a-select-option>
         </a-select>
-        <a-button size="small" :loading="loading" @click="loadGraph">刷新</a-button>
-      </a-space>
-    </template>
+      </template>
 
-    <a-empty v-if="!taskId" description="还没有任务，先到「任务中心」派一个" />
-
-    <template v-else>
-      <a-space wrap style="margin-bottom: 12px">
-        <StatusTag v-if="graph" :status="graph.task.status" />
-        <a-tag color="purple">任务 #{{ taskId }}</a-tag>
-        <a-tag>完成 {{ graph?.stats.done ?? 0 }}/{{ graph?.stats.total ?? 0 }}</a-tag>
-        <a-tag v-if="graph?.stats.running" color="processing">进行中 {{ graph.stats.running }}</a-tag>
-        <a-tag v-if="graph?.stats.failed" color="error">失败 {{ graph.stats.failed }}</a-tag>
-        <a-progress :percent="percent" size="small" style="width: 200px" />
-      </a-space>
-
-      <a-alert
-        v-if="!hasGraph"
-        type="info"
-        show-icon
-        style="margin-bottom: 12px"
-        message="这个任务还没有可展示的协作结构"
-        description="任务是单人执行且尚未产生运行记录，或者协作步骤还没拆分出来；派发后会自动出现节点与连线。"
-      />
-
-      <a-tabs v-model:active-key="tab">
-        <a-tab-pane key="graph" tab="关系图" force-render>
-          <div ref="graphEl" style="height: 460px; width: 100%" />
-          <a-typography-text type="secondary" style="font-size: 12px">
-            实线＝分配，虚线＝依赖，紫色粗线＝交接；拖拽节点、滚轮缩放可查看布局。
-          </a-typography-text>
-        </a-tab-pane>
-        <a-tab-pane key="tree" tab="思维导图" force-render>
-          <div ref="treeEl" style="height: 460px; width: 100%" />
-          <a-typography-text type="secondary" style="font-size: 12px">
-            参与者 → 调用过的工具 → 涉及的文件；点击节点可展开/收起。
-          </a-typography-text>
-        </a-tab-pane>
-      </a-tabs>
-    </template>
-  </a-card>
+      <a-alert v-if="loadError" type="error" show-icon :message="loadError" />
+      <a-empty v-else-if="!taskId" description="还没有任务" />
+      <template v-else>
+        <a-alert
+          v-if="!hasTree && !loadError"
+          type="info"
+          show-icon
+          style="margin-bottom: 12px"
+          message="这个任务还没有参与者"
+          description="等任务开始执行后，这里会按「参与者 → 工具 → 文件」展开。"
+        />
+        <div ref="treeEl" style="height: 420px; width: 100%" />
+        <a-typography-text type="secondary" style="font-size: 12px">
+          参与者 → 调用过的工具 → 涉及的文件；点击节点可展开/收起。
+        </a-typography-text>
+      </template>
+    </a-card>
+  </div>
 </template>
