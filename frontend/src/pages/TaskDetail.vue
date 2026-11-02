@@ -8,6 +8,7 @@ import { auth } from '../auth'
 import { useLive } from '../live'
 import { EVENT_TYPES, fmtCost, fmtMs, fmtNum, fmtTime } from '../labels'
 import StatusTag from '../components/StatusTag.vue'
+import MarkdownView from '../components/MarkdownView.vue'
 import EventTag from '../components/EventTag.vue'
 
 const props = defineProps<{ id: string }>()
@@ -208,7 +209,7 @@ async function cancelTask() {
 
                 <a-alert v-if="r.error" type="error" show-icon :message="r.error" style="margin-bottom: 12px" />
 
-                <pre v-if="r.output_text" class="output-pre">{{ r.output_text }}</pre>
+                <MarkdownView v-if="r.output_text" :content="r.output_text" class="output-md" />
                 <a-empty
                   v-else
                   :description="r.status === 'running' || r.status === 'pending' ? '执行中，等待结果…' : '无输出'"

@@ -170,3 +170,30 @@ async def test_opencode_bare_model_name_is_completed_or_rejected(monkeypatch):
     r = await a.run(RunRequest(prompt="x", workdir=Path("."), config={}, secrets={}, model="no-such-model", timeout_sec=5),
                     emit, None)
     assert not r.ok and "provider/" in r.error  # fails fast with a clear message, no process launched
+
+
+def test_opencode_empty_output_is_a_failure():
+    """只调工具、没有文本时不能算成功，否则聊天里会出现空白气泡。"""
+    import json as _json
+
+    from app.adapters.opencode import OpenCodeParser
+
+    parser = OpenCodeParser("opencode/deepseek-v4.1-flash")
+    parser.feed(_json.dumps({"type": "step_start", "sessionID": "ses_x", "part": {"type": "step-start"}}))
+    parser.feed(_json.dumps({"type": "step_finish", "part": {"type": "step-finish", "tokens": {"input": 3, "output": 1}}}))
+    result = parser.finish()
+    assert result.ok is False
+    assert "没有返回任何文本" in (result.error or "")
+
+
+def test_opencode_text_output_is_kept():
+    import json as _json
+
+    from app.adapters.opencode import OpenCodeParser
+
+    parser = OpenCodeParser("opencode/deepseek-v4.1-flash")
+    parser.feed(_json.dumps({"type": "step_start", "sessionID": "ses_y", "part": {"type": "step-start"}}))
+    parser.feed(_json.dumps({"type": "text", "part": {"type": "text", "text": "你好"}}))
+    result = parser.finish()
+    assert result.ok is True
+    assert result.output == "你好"

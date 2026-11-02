@@ -93,6 +93,10 @@ class OpenCodeParser:
     def finish(self) -> RunResult:
         r = self.result
         r.output = "\n\n".join(self._texts)
+        if r.ok and not r.output.strip():
+            # 常见于权限拒绝后模型只调工具、不产出文本：不要留下一条空白消息
+            r.ok = False
+            r.error = "OpenCode 没有返回任何文本输出（可能被权限拒绝，或只做了工具调用就结束）"
         r.input_tokens, r.output_tokens, r.cost_usd = self.in_tokens, self.out_tokens, self.cost
         return r
 

@@ -21,6 +21,7 @@ import {
 import { api, type Agent } from '../api'
 import { auth } from '../auth'
 import { useLive, useLiveStatus } from '../live'
+import MarkdownView from '../components/MarkdownView.vue'
 import { fmtTime } from '../labels'
 import StatusTag from '../components/StatusTag.vue'
 
@@ -222,6 +223,8 @@ const EMPTY_TASK: CollabTask = {
 
 const canOperate = computed(() => auth.can('operator'))
 const liveConnected = useLiveStatus()
+// 流式增量：任务执行中先显示，落库后清掉
+const streaming = ref<Record<number, { agent: string; text: string }>>({})
 
 const convs = ref<Conv[]>([])
 const current = ref<number | null>(null)
@@ -462,6 +465,19 @@ useLive((m) => {
       msgs.value.push(m.data as Msg)
       void scrollToBottom()
     }
+    if (m.data.task_id != null && streaming.value[m.data.task_id]) {
+      const next = { ...streaming.value }
+      delete next[m.data.task_id]
+      streaming.value = next
+    }
+  } else if (m.topic === 'agent_delta' && m.data?.conversation_id === cid) {
+    const key = Number(m.data.task_id)
+    const prev = streaming.value[key]
+    streaming.value = {
+      ...streaming.value,
+      [key]: { agent: m.data.agent_name ?? 'Agent', text: (prev?.text ?? '') + (m.data.text ?? '') },
+    }
+    void scrollToBottom()
   } else if (m.topic === 'collab_updated' && m.data?.conversation_id === cid) {
     void loadTasks(cid)
   } else if (m.topic === 'conversation_updated' && m.data?.id === cid) {
@@ -876,9 +892,12 @@ async function submitAddStep() {
                     <a v-if="m.task_id" class="task-link" @click="focusTask(m.task_id ?? 0)">#{{ m.task_id }}</a>
                   </div>
                   <div class="msg-text">
-                    <template v-for="(p, i) in bubbleParts(m)" :key="i">
-                      <span v-if="p.mention" class="mention">{{ p.text }}</span>
-                      <span v-else>{{ p.text }}</span>
+                    <MarkdownView v-if="m.sender_type === 'agent'" :content="displayText(m)" />
+                    <template v-else>
+                      <template v-for="(p, i) in bubbleParts(m)" :key="i">
+                        <span v-if="p.mention" class="mention">{{ p.text }}</span>
+                        <span v-else>{{ p.text }}</span>
+                      </template>
                     </template>
                     <div v-if="isLong(m)">
                       <a class="task-link" @click="toggleExpand(m.id)">{{ expanded[m.id] ? '收起' : '展开全文' }}</a>
@@ -887,6 +906,21 @@ async function submitAddStep() {
                 </div>
               </div>
             </template>
+            <div v-for="(s, tid) in streaming" :key="'stream-' + tid" class="msg-row">
+              <a-avatar :size="32" :style="{ background: '#8c9bb5', flexShrink: 0 }">
+                <template #icon><RobotOutlined /></template>
+              </a-avatar>
+              <div class="msg-body">
+                <div class="msg-meta">
+                  <b class="msg-sender">{{ s.agent }}</b>
+                  <a-tag color="processing" class="tiny-tag">生成中</a-tag>
+                  <a-typography-text type="secondary" style="font-size: 11px">#{{ tid }}</a-typography-text>
+                </div>
+                <div class="msg-text">
+                  <MarkdownView :content="s.text" />
+                </div>
+              </div>
+            </div>
             <div v-if="!msgs.length" class="stream-empty">
               <a-empty description="还没有消息，发一条消息开始协作" />
             </div>
