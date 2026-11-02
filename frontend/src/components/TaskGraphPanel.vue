@@ -50,6 +50,7 @@ const treeEl = ref<HTMLDivElement | null>(null)
 
 let graphChart: echarts.ECharts | null = null
 let treeChart: echarts.ECharts | null = null
+let resizeObserver: ResizeObserver | null = null
 
 const STATUS_COLOR: Record<string, string> = {
   completed: '#52c41a',
@@ -67,11 +68,32 @@ const STATUS_COLOR: Record<string, string> = {
 const TYPE_COLOR = { task: '#722ed1', agent: '#1677ff' } as const
 
 const percent = computed(() => Math.round((graph.value?.stats.progress ?? 0) * 100))
+const hasGraph = computed(() => !!graph.value && graph.value.nodes.length > 1)
 
 function nodeColor(n: GraphNode): string {
   if (n.type === 'task') return TYPE_COLOR.task
   if (n.type === 'agent') return TYPE_COLOR.agent
   return STATUS_COLOR[n.status ?? ''] ?? '#d9d9d9'
+}
+
+/** Wait until the ref exists AND is laid out: echarts renders a 0×0 canvas inside a hidden tab pane. */
+function waitForRef(target: { value: HTMLDivElement | null }, tries = 60): Promise<HTMLDivElement | null> {
+  return new Promise((resolve) => {
+    let left = tries
+    const check = () => {
+      const el = target.value
+      if (el && el.clientWidth > 10 && el.clientHeight > 10) return resolve(el)
+      if (--left <= 0) return resolve(null)
+      requestAnimationFrame(check)
+    }
+    check()
+  })
+}
+
+function observe(el: HTMLElement) {
+  if (!resizeObserver || !el) return
+  resizeObserver.unobserve(el)
+  resizeObserver.observe(el)
 }
 
 async function loadTasks() {
@@ -100,8 +122,8 @@ async function loadGraph() {
     graph.value = g
     tree.value = t
     await nextTick()
-    if (tab.value === 'graph') renderGraph()
-    else renderTree()
+    if (tab.value === 'graph') await renderGraph()
+    else await renderTree()
   } catch {
     graph.value = null
     tree.value = null
@@ -110,9 +132,12 @@ async function loadGraph() {
   }
 }
 
-function renderGraph() {
-  if (!graphEl.value || !graph.value) return
-  graphChart = graphChart ?? echarts.init(graphEl.value)
+async function renderGraph() {
+  const el = await waitForRef(graphEl)
+  if (!el || !graph.value) return
+  graphChart = graphChart ?? echarts.init(el)
+  observe(el)
+
   const byId = new Map(graph.value.nodes.map((n) => [n.id, n]))
   const data = graph.value.nodes.map((n) => ({
     id: n.id,
@@ -139,6 +164,7 @@ function renderGraph() {
     symbol: ['none', 'arrow'],
     symbolSize: 7,
   }))
+
   graphChart.setOption(
     {
       tooltip: {
@@ -150,7 +176,12 @@ function renderGraph() {
           }
           const n = byId.get(p.data.id)
           if (!n) return p.name
-          const extra = n.type === 'step' ? `状态：${n.status}｜角色：${n.role ?? '-'}` : n.type === 'agent' ? `完成 ${n.done ?? 0}/${n.total ?? 0}` : ''
+          const extra =
+            n.type === 'step'
+              ? `状态：${n.status}｜角色：${n.role ?? '-'}`
+              : n.type === 'agent'
+                ? `完成 ${n.done ?? 0}/${n.total ?? 0}`
+                : ''
           return `<b>${n.label}</b><br/>${n.type === 'task' ? `任务 #${graph.value?.task.id}` : extra}`
         },
       },
@@ -172,11 +203,15 @@ function renderGraph() {
     },
     true,
   )
+  graphChart.resize()
 }
 
-function renderTree() {
-  if (!treeEl.value || !tree.value) return
-  treeChart = treeChart ?? echarts.init(treeEl.value)
+async function renderTree() {
+  const el = await waitForRef(treeEl)
+  if (!el || !tree.value) return
+  treeChart = treeChart ?? echarts.init(el)
+  observe(el)
+
   treeChart.setOption(
     {
       tooltip: { trigger: 'item', triggerOn: 'mousemove' },
@@ -201,12 +236,15 @@ function renderTree() {
     },
     true,
   )
+  treeChart.resize()
 }
 
-function onResize() {
-  graphChart?.resize()
-  treeChart?.resize()
-}
+watch(taskId, () => loadGraph())
+watch(tab, async () => {
+  await nextTick()
+  if (tab.value === 'graph') await renderGraph()
+  else await renderTree()
+})
 
 useLive((msg) => {
   if (msg.topic === 'task_updated' || msg.topic === 'run_updated') {
@@ -215,20 +253,18 @@ useLive((msg) => {
   }
 })
 
-watch(taskId, () => loadGraph())
-watch(tab, () => {
-  if (tab.value === 'graph') renderGraph()
-  else renderTree()
-})
-
 onMounted(async () => {
+  resizeObserver = new ResizeObserver(() => {
+    graphChart?.resize()
+    treeChart?.resize()
+  })
   await loadTasks()
   await loadGraph()
-  window.addEventListener('resize', onResize)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', onResize)
+  resizeObserver?.disconnect()
+  resizeObserver = null
   graphChart?.dispose()
   treeChart?.dispose()
   graphChart = null
@@ -268,14 +304,23 @@ onBeforeUnmount(() => {
         <a-progress :percent="percent" size="small" style="width: 200px" />
       </a-space>
 
+      <a-alert
+        v-if="!hasGraph"
+        type="info"
+        show-icon
+        style="margin-bottom: 12px"
+        message="这个任务还没有可展示的协作结构"
+        description="任务是单人执行且尚未产生运行记录，或者协作步骤还没拆分出来；派发后会自动出现节点与连线。"
+      />
+
       <a-tabs v-model:active-key="tab">
-        <a-tab-pane key="graph" tab="关系图">
+        <a-tab-pane key="graph" tab="关系图" force-render>
           <div ref="graphEl" style="height: 460px; width: 100%" />
           <a-typography-text type="secondary" style="font-size: 12px">
             实线＝分配，虚线＝依赖，紫色粗线＝交接；拖拽节点、滚轮缩放可查看布局。
           </a-typography-text>
         </a-tab-pane>
-        <a-tab-pane key="tree" tab="思维导图">
+        <a-tab-pane key="tree" tab="思维导图" force-render>
           <div ref="treeEl" style="height: 460px; width: 100%" />
           <a-typography-text type="secondary" style="font-size: 12px">
             参与者 → 调用过的工具 → 涉及的文件；点击节点可展开/收起。
