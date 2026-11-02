@@ -350,3 +350,45 @@ class PromptTemplate(Base):
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+# ------------------------------------------------------------- evaluations (phase 5)
+
+
+class EvalSuite(Base):
+    """一个评测套件：选哪些 Agent/技能/Prompt/MCP，跑哪些用例，要达到什么阈值。"""
+
+    __tablename__ = "eval_suites"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), default=1)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    agent_ids: Mapped[list] = mapped_column(default=list)
+    skill_ids: Mapped[list] = mapped_column(default=list)
+    prompt_ids: Mapped[list] = mapped_column(default=list)
+    mcp_ids: Mapped[list] = mapped_column(default=list)
+    cases: Mapped[list] = mapped_column(default=list)       # [{"prompt": str, "expect": str}]
+    thresholds: Mapped[dict] = mapped_column(default=dict)   # {"completion":0.9,"tool_use":0.5,...}
+    max_rounds: Mapped[int] = mapped_column(Integer, default=3)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class EvalRun(Base):
+    """套件的一次（或一轮）执行结果。"""
+
+    __tablename__ = "eval_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    suite_id: Mapped[int] = mapped_column(ForeignKey("eval_suites.id"), index=True)
+    round: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running | completed | failed | cancelled
+    passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    metrics: Mapped[dict] = mapped_column(default=dict)
+    detail: Mapped[list] = mapped_column(default=list)       # per case/per agent rows
+    task_ids: Mapped[list] = mapped_column(default=list)
+    hints: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)

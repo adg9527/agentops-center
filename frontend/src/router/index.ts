@@ -13,16 +13,7 @@ const pages: RouteRecordRaw[] = [
   { path: 'mcp', name: 'mcp', component: () => import('../pages/Mcp.vue') },
   { path: 'skills', name: 'skills', component: () => import('../pages/Skills.vue') },
   { path: 'prompts', name: 'prompts', component: () => import('../pages/Prompts.vue') },
-  {
-    path: 'evals',
-    name: 'evals',
-    component: () => import('../pages/Placeholder.vue'),
-    props: {
-      phase: 5,
-      title: '自动化评测',
-      items: ['数据集 (CSV/JSON 导入、版本)', '10 类评分器（确定性优先）', '多 Agent 横向 / 版本纵向对比', '评测可视化'],
-    },
-  },
+  { path: 'evals', name: 'evals', component: () => import('../pages/Evals.vue') },
   {
     path: 'reports',
     name: 'reports',

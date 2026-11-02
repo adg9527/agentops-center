@@ -37,7 +37,7 @@ const ITEMS = [
   { key: '/tasks', icon: ThunderboltOutlined, label: '任务中心' },
   { key: '/sessions', icon: HistoryOutlined, label: '本地会话' },
   { key: '/monitor', icon: MonitorOutlined, label: '执行监控' },
-  { key: '/evals', icon: ExperimentOutlined, label: '自动化评测', phase: 5 },
+  { key: '/evals', icon: ExperimentOutlined, label: '自动化评测' },
   { key: '/reports', icon: FileTextOutlined, label: '评测报告', phase: 6 },
   { key: '/versions', icon: BranchesOutlined, label: '版本管理', phase: 4 },
   { key: '/settings', icon: SettingOutlined, label: '系统设置' },
