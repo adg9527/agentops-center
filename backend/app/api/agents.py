@@ -59,6 +59,12 @@ def risk_warnings(adapter_type: str, config: dict) -> list[str]:
             w.append(f"开放了高风险工具: {', '.join(sorted(risky))}")
         if not config.get("isolate", True):
             w.append("未隔离用户级配置：Agent 将加载本机全局插件/MCP")
+    elif adapter_type == "claude_sdk":
+        if config.get("permission_mode") == "bypassPermissions":
+            w.append("权限模式为 bypassPermissions：工具调用不再询问，可直接改文件/执行命令")
+        risky = set(config.get("allowed_tools") or []) & _HIGH_RISK_CLAUDE_TOOLS
+        if risky:
+            w.append(f"开放了高风险工具: {', '.join(sorted(risky))}")
     elif adapter_type == "opencode":
         allowed = [k for k, v in (config.get("permission") or {}).items() if v == "allow"]
         if allowed:

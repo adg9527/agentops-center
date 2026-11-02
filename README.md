@@ -50,13 +50,26 @@ AgentOps Center 把这些收敛成一个本地 Web 平台：**Agent 有台账、
 
 | 模块 | 能力 |
 | --- | --- |
-| **Agent 管理** | 接入 Claude Code / OpenCode / Codex / 通用 HTTP / **LangChain 内置 Agent**；每个 Agent 可配模型、并发上限、超时、重试；支持启用/禁用、连通性测试、软删除保留历史 |
+| **Agent 管理** | 接入 Claude Code（CLI 或 **Agent SDK**）/ OpenCode / Codex / 通用 HTTP / **LangChain 内置 Agent**；每个 Agent 可配模型、并发上限、超时、重试；支持启用/禁用、连通性测试、软删除保留历史 |
 | **任务中心** | 单次任务可同时派发给多个 Agent；每个任务在独立工作目录 `data/workspaces/task-<id>` 中执行；随时终止 |
 | **任务详情** | 逐 Agent 实时输出流、Token 与成本、工具调用 / 模型调用 / 权限拒绝等时间线事件 |
 | **执行监控** | 全局实时事件流，按任务、Agent、事件类型、时间筛选 |
 | **Agent 群聊** | 建群邀请 Agent、设置角色与主控；`@Agent` 人工分工，或「自动协作」由主控拆分 → 分配 → 汇总；支持步骤交接、审批、暂停 / 恢复 / 终止 / 补充说明 / 重试 / 改派 |
 | **系统设置** | 用户与角色（admin / operator / viewer）、项目、审计日志 |
 | **平台内置 Agent** | 基于 LangChain 的原生智能体，密钥加密存库，默认接 DeepSeek，无需外挂 CLI 即可跑通全流程 |
+
+## 接入本地 AI 工具
+
+| 工具 | 接入方式 | 说明 |
+| --- | --- | --- |
+| **Claude Code** | CLI 适配器：`claude -p --output-format stream-json` | 最稳，任何装了 claude 的机器都能用；解析 stdout 得到工具/Token 事件 |
+| **Claude Code（Agent SDK）** | `claude-agent-sdk`（官方 Python API） | 同一引擎，类型化消息：工具调用、成本、会话 ID 直接拿到，不用解析流；支持 `permission_mode`、`allowed_tools`、`max_turns`、`max_budget_usd` |
+| **OpenCode** | CLI 适配器：`opencode run --format json` | 模型要 `provider/模型名`（保存时自动补全） |
+| **Codex** | CLI 适配器 | 需本机安装 codex |
+| **自研 HTTP 服务** | 通用 HTTP 适配器 | POST 一个 JSON，按 dot-path 取结果 |
+| **WorkBuddy** | 暂无服务端 API | 见下 |
+
+**WorkBuddy 的现状（实测 5.9.3）**：它在本机只开了 `127.0.0.1:18488` 的探针接口（`GET /workbuddy/probe` → `{"ok":true,"app":"workbuddy-desktop","version":"5.9.3"}`），其余路径全部 404；`resources/wb-guest-sdk/wb.js` 是给内嵌网页用的 postMessage 桥（`wb:endpoint` / `wb:event` / `session_hello`），不是对外的对话 API。它的 Agent 引擎是 ACP（`initialize` / `session/load`，带 `mcpServers`），模型侧走 OpenAI 兼容接口（内部 `127.0.0.1:52741/v1/chat/completions`）。因此目前**无法把 WorkBuddy 当作 Agent 接进来**；可行的两个方向是：给 WorkBuddy 配 MCP Server（由 AgentOps 提供工具），或让 AgentOps 暴露一个 OpenAI 兼容网关给 WorkBuddy 当自定义模型。
 
 ## 系统架构
 
@@ -139,7 +152,7 @@ npx vite              # 访问 http://127.0.0.1:5173
 
 ## 使用流程
 
-1. **Agent 管理 → 接入 Agent**：选择 Claude Code / OpenCode / **LangChain Agent（平台内置）** / Codex / 通用 HTTP，填写模型后保存，点「测试连接」。
+1. **Agent 管理 → 接入 Agent**：选择 Claude Code（CLI）/ **Claude Code（Agent SDK）** / OpenCode / **LangChain Agent（平台内置）** / Codex / 通用 HTTP，填写模型后保存，点「测试连接」。
    - OpenCode 的模型是 `provider/模型名`（如 `opencode/deepseek-v4.1-flash`）：只填模型名也能用，保存时按本机 `opencode models` 自动补全，运行前还会再兜一次；
    - LangChain Agent 默认走 DeepSeek，密钥读取环境变量 `DEEPSEEK_API_KEY`（也可在页面填写，落库时加密）。
 2. **任务中心 → 发送任务**：勾选一个或多个 Agent，输入任务描述。
