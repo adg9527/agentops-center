@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { api, type Agent, type Task } from '../api'
@@ -190,8 +190,21 @@ useLive((msg) => {
   }
 })
 
+let poll: number | undefined
+
 onMounted(async () => {
   await Promise.all([loadAgents(), loadConversations(), loadTasks()])
+  // 兜底轮询：有任务在跑时每 4 秒刷新一次进度（WebSocket 事件之外的保险）
+  poll = window.setInterval(() => {
+    const busy = tasks.value.some((x) =>
+      ['running', 'pending', 'waiting_approval', 'waiting_handoff', 'paused'].includes(x.status),
+    )
+    if (busy) void loadTasks()
+  }, 4000)
+})
+
+onBeforeUnmount(() => {
+  if (poll) window.clearInterval(poll)
 })
 </script>
 
@@ -291,6 +304,15 @@ onMounted(async () => {
                   <template #description>
                     <a-space wrap size="small">
                       <a-tag v-for="name in runAgents(item)" :key="name" color="blue">{{ name }}</a-tag>
+                      <a-progress
+                        v-if="item.progress && item.progress.total"
+                        :percent="item.progress.percent"
+                        size="small"
+                        style="width: 110px; margin: 0"
+                      />
+                      <a-typography-text v-if="item.progress && item.progress.total" type="secondary" style="font-size: 11px">
+                        {{ item.progress.done }}/{{ item.progress.total }} {{ item.progress.unit }}
+                      </a-typography-text>
                       <a-typography-text type="secondary">{{ fmtTime(item.created_at) }}</a-typography-text>
                       <a-typography-text v-if="taskCost(item) !== null" type="secondary">成本 {{ fmtCost(taskCost(item)) }}</a-typography-text>
                       <a-typography-text v-if="item.error" type="danger">{{ item.error.slice(0, 80) }}</a-typography-text>

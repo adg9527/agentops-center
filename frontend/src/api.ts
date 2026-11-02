@@ -165,6 +165,7 @@ export interface Task {
   error: string | null
   runs: Run[]
   active?: boolean
+  progress?: { total: number; done: number; running: number; failed: number; unit: string; percent: number }
 }
 
 export interface TraceEvent {

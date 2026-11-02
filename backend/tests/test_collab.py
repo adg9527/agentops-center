@@ -153,7 +153,12 @@ async def test_manual_pipeline_with_handoffs_and_trace(client, admin):
 
     msgs = (await client.get(f"/api/conversations/{cid}/messages")).json()
     agent_msgs = [(m["sender_name"], m["content"]) for m in msgs if m["sender_type"] == "agent"]
-    assert agent_msgs == [("Ana", "ANALYSIS-RESULT"), ("Exe", "done by Exe"), ("Rev", "done by Rev")]
+    # 群聊里每个 Agent 只汇报进度：步骤名 + 结果摘要（完整输出留在任务详情）
+    assert [n for n, _ in agent_msgs] == ["Ana", "Exe", "Rev"]
+    assert all(content.startswith("✅") and "完成" in content for _, content in agent_msgs)
+    assert "ANALYSIS-RESULT" in agent_msgs[0][1]
+    brief_msgs = [m for m in msgs if m["sender_type"] == "agent"]
+    assert all(m["data"].get("brief") for m in brief_msgs)
     assert msgs[-1]["kind"] == "status" and "已完成" in msgs[-1]["content"]
 
     events = (await client.get(f"/api/tasks/{tid}/events")).json()
@@ -163,6 +168,9 @@ async def test_manual_pipeline_with_handoffs_and_trace(client, admin):
 
     listing = (await client.get("/api/tasks")).json()
     assert listing["total"] == 1 and len(listing["items"][0]["runs"]) == 3  # subtasks rolled up, not listed
+    assert listing["items"][0]["progress"]["total"] == 3
+    assert listing["items"][0]["progress"]["done"] == 3
+    assert listing["items"][0]["progress"]["percent"] == 100
     assert (await client.get(f"/api/tasks?agent_id={ids['Exe']}")).json()["total"] == 1
 
 

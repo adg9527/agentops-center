@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..db import get_session
-from ..models import TERMINAL_TASK, Agent, AgentRun, Project, Role, RunStatus, Task, TaskStatus, TraceEvent, User
+from ..models import (TERMINAL_TASK, Agent, AgentRun, Project, Role, RunStatus, Task, TaskStatus, TaskStep,
+                       TraceEvent, User)
 from ..services.audit import audit
 from ..services.collab import orchestrator
 from ..services.task_runner import run_to_dict, runner
@@ -117,7 +118,38 @@ async def list_tasks(status: str | None = None, agent_id: int | None = None, pro
     total = await session.scalar(select(func.count()).select_from(q.subquery()))
     tasks = (await session.scalars(q.order_by(Task.id.desc()).limit(min(limit, 200)).offset(offset))).all()
     runs = await _runs_with_agents(session, [t.id for t in tasks])
-    return {"total": total, "items": [{**task_dict(t), "runs": runs.get(t.id, [])} for t in tasks]}
+
+    # 实时进度：协作任务按步骤统计，普通任务按 run 统计
+    ids = [t.id for t in tasks]
+    step_stats: dict[int, dict[str, int]] = {}
+    if ids:
+        for root_id, status, count in (await session.execute(
+            select(TaskStep.root_task_id, TaskStep.status, func.count())
+            .where(TaskStep.root_task_id.in_(ids))
+            .group_by(TaskStep.root_task_id, TaskStep.status)
+        )).all():
+            step_stats.setdefault(root_id, {})[status] = count
+
+    def progress_of(task: Task) -> dict:
+        counts = step_stats.get(task.id)
+        if counts:
+            total = sum(counts.values())
+            done = counts.get("completed", 0)
+            running = counts.get("running", 0) + counts.get("waiting_approval", 0) + counts.get("waiting_handoff", 0)
+            failed = counts.get("failed", 0) + counts.get("cancelled", 0) + counts.get("skipped", 0)
+            unit = "step"
+        else:
+            task_runs = runs.get(task.id, [])
+            total = len(task_runs)
+            done = sum(1 for r in task_runs if r["status"] == "completed")
+            running = sum(1 for r in task_runs if r["status"] in ("running", "pending"))
+            failed = sum(1 for r in task_runs if r["status"] in ("failed", "cancelled", "timeout"))
+            unit = "run"
+        return {"total": total, "done": done, "running": running, "failed": failed, "unit": unit,
+                "percent": round(done / total * 100) if total else 0}
+
+    return {"total": total, "items": [{**task_dict(t), "runs": runs.get(t.id, []), "progress": progress_of(t)}
+                                      for t in tasks]}
 
 
 async def _get_task(session: AsyncSession, task_id: int) -> Task:

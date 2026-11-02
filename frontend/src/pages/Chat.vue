@@ -887,6 +887,7 @@ async function submitAddStep() {
                       {{ roleOf(m.data?.role)?.text }}
                     </a-tag>
                     <a-tag v-if="m.kind === 'plan'" color="gold" class="tiny-tag">计划</a-tag>
+                    <a-tag v-if="m.data?.brief" color="geekblue" class="tiny-tag">进度</a-tag>
                     <a-tag v-if="m.kind === 'intervention'" color="orange" class="tiny-tag">人工介入</a-tag>
                     <span class="msg-time">{{ fmtTime(m.created_at) }}</span>
                     <a v-if="m.task_id" class="task-link" @click="focusTask(m.task_id ?? 0)">#{{ m.task_id }}</a>

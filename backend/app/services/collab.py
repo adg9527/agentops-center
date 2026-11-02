@@ -239,11 +239,33 @@ def step_prompt(*, request: str, step: TaskStep, agent: Agent, role: str, handof
     if history:
         parts.append(f"## 群聊近期记录\n{history}")
     parts.append(
+        "## 群聊汇报要求\n- 回复开头先用 3 行以内说清：你在做哪个子任务、当前进度、是否需要交接给谁。\n"
+        "- 详细内容写进工作目录里的文件，群聊里不要贴大段正文。\n\n"
         "## 协作约定\n- 所有成员共用当前工作目录，可以读取前序成员留下的文件。\n"
         f"- 如需把剩余工作交给其他成员，在回复末尾附加（成员可选：{', '.join(teammates)}）：\n"
         '```handoff\n{"to": "成员名", "reason": "交接原因", "done": "已完成的工作", "remaining": "需要对方完成的工作", "files": ["相关文件"]}\n```'
     )
     return "\n\n".join(parts)
+
+
+def brief_result(st: TaskStep, run: AgentRun | None, ok: bool, full: str | None) -> str:
+    """群聊里只汇报「当前步骤 / 结果 / 耗时成本」，完整输出留在任务详情。"""
+    meta: list[str] = []
+    if run and run.duration_ms:
+        meta.append(f"{run.duration_ms / 1000:.1f}s")
+    if run and run.cost_usd:
+        meta.append(f"${run.cost_usd:.4f}")
+    if run and (run.input_tokens or run.output_tokens):
+        meta.append(f"{run.input_tokens or 0}+{run.output_tokens or 0} tok")
+    head = "✅" if ok else "❌"
+    title = f"{head} 「{st.title}」{'完成' if ok else '失败'}"
+    if meta:
+        title += " · " + " · ".join(meta)
+    body = _clip(full, 240) if ok else _clip(st.error or st.output_text, 300)
+    tail = ""
+    if ok and full and len(full) > 240:
+        tail = f"\n\n（已截断，完整输出见任务 #{st.root_task_id}）"
+    return f"{title}\n{body}{tail}"
 
 
 # ------------------------------------------------------------------ orchestrator
@@ -537,14 +559,23 @@ class Orchestrator:
                             .values(status="completed" if ok else "rejected", completed_at=utcnow()))
             await s.commit()
 
+        # 计划/汇总保留全文（它们是给用户看的结论），普通步骤只发简短进度
+        full_output = st.output_text or ""
+        if st.kind in ("plan", "summary") and ok:
+            content = full_output
+            brief = False
+        else:
+            content = brief_result(st, run, ok, full_output)
+            brief = True
         await post_message(
             root.conversation_id,
-            st.output_text if ok else f"步骤「{st.title}」{'已取消' if st.status == 'cancelled' else '失败'}：{st.error}",
+            content,
             sender_type="agent", sender_id=agent.id, sender_name=agent.name,
             kind={"plan": "plan", "summary": "result"}.get(st.kind, "result") if ok else "status",
             task_id=root.id, step_id=st.id,
             data={"step_key": st.step_key, "role": st.role, "status": st.status, "cost_usd": run.cost_usd if run else None,
-                  "duration_ms": run.duration_ms if run else None},
+                  "duration_ms": run.duration_ms if run else None, "brief": brief,
+                  "output_chars": len(full_output)},
         )
         if ok and st.kind == "plan":
             await self._apply_plan(root, st)
