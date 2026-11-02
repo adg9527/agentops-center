@@ -40,11 +40,31 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
     window.location.href = '/login'
   }
   const text = await res.text()
-  const data = text ? JSON.parse(text) : null
+  const ctype = res.headers.get('content-type') ?? ''
+  let data: any = null
+  if (text) {
+    if (ctype.includes('application/json') || text.startsWith('{') || text.startsWith('[')) {
+      try {
+        data = JSON.parse(text)
+      } catch {
+        data = null
+      }
+    }
+  }
   if (!res.ok) {
     const detail = data?.detail
-    const msg = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map((d: any) => d.msg).join('; ') : res.statusText
+    const snippet = text && !data ? `：${text.replace(/\s+/g, ' ').slice(0, 120)}` : ''
+    const msg =
+      typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d: any) => d.msg).join('; ')
+          : `HTTP ${res.status} ${res.statusText}${snippet}`
     throw new ApiError(res.status, msg)
+  }
+  if (text && data === null) {
+    // e.g. an old backend without this route answers with the SPA shell
+    throw new ApiError(res.status, `响应不是 JSON（HTTP ${res.status}）：${text.replace(/\s+/g, ' ').slice(0, 120)}`)
   }
   return data as T
 }

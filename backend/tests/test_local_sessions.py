@@ -101,6 +101,20 @@ def test_get_session_builds_transcript(fake_claude):
     assert tool["name"] == "Bash" and "pytest" in tool["text"]
 
 
+def test_truncated_utf8_in_head_does_not_raise(tmp_path, monkeypatch):
+    """The CLI appends while we read: a head chunk can split a multi-byte character."""
+    root = tmp_path / "claude-projects" / "D--work-x"
+    root.mkdir(parents=True)
+    good = json.dumps({"type": "user", "cwd": "D:/work/x", "timestamp": "2026-11-02T10:00:00Z",
+                       "message": {"role": "user", "content": "中文提问"}}, ensure_ascii=False).encode()
+    (root / "cccccccc-3333.jsonl").write_bytes(good + b"\n" + b'{"type":"user","text":"' + b"\xe2\x80")
+    monkeypatch.setattr(ls, "CLAUDE_PROJECTS", tmp_path / "claude-projects")
+
+    items = ls.list_sessions(source="claude")
+    assert [i["id"] for i in items] == ["cccccccc-3333"]
+    assert items[0]["title"] == "中文提问"
+
+
 def test_get_session_rejects_path_traversal(fake_claude):
     with pytest.raises(ValueError):
         ls.get_claude_session("..", "x", root=fake_claude)

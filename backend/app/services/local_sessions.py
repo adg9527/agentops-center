@@ -54,13 +54,28 @@ def normalize_path(path: str | None) -> str:
 
 
 def _read_head(path: Path) -> list[dict]:
+    """Parse the first chunk of a transcript.
+
+    The chunk can end in the middle of a UTF-8 sequence (the CLI is appending while
+    we read), so decode with replacement and drop the trailing partial line.
+    """
     rows: list[dict] = []
-    with path.open("rb") as fh:
-        data = fh.read(_HEAD_BYTES)
-    for line in data.splitlines():
+    try:
+        with path.open("rb") as fh:
+            data = fh.read(_HEAD_BYTES)
+    except OSError:
+        return rows
+    text = data.decode("utf-8", errors="replace")
+    lines = text.split("\n")
+    if len(lines) > 1:
+        lines = lines[:-1]  # last line may be half-written
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
         try:
             rows.append(json.loads(line))
-        except json.JSONDecodeError:
+        except ValueError:  # malformed JSON and undecodable bytes both land here
             continue
         if len(rows) >= 40:
             break
@@ -208,7 +223,10 @@ def _opencode_list(limit: int, query: str, root: Path | None) -> list[dict]:
 
 
 def _opencode_transcript(session_id: str, root: Path | None) -> list[dict]:
-    con = _oc_connect(root)
+    try:
+        con = _oc_connect(root)
+    except sqlite3.Error:
+        return []
     try:
         messages = con.execute(
             "select id, data, time_created from message where session_id = ? order by time_created",
@@ -222,6 +240,8 @@ def _opencode_transcript(session_id: str, root: Path | None) -> list[dict]:
             f"select message_id, data, time_created from part where message_id in ({placeholders}) order by time_created",
             ids,
         ).fetchall()
+    except sqlite3.Error:
+        return []
     finally:
         con.close()
 
@@ -280,7 +300,10 @@ def _claude_list(limit: int, query: str, root: Path | None) -> list[dict]:
             break
         if path.stem in seen:
             continue
-        meta = _claude_meta(path)
+        try:
+            meta = _claude_meta(path)
+        except OSError:
+            continue
         if not meta:
             continue
         if q and q not in meta["title"].lower() and q not in (meta["project_path"] or "").lower():
@@ -321,14 +344,19 @@ def get_opencode_session(session_id: str, root: Path | None = None) -> dict:
         raise ValueError("非法的 session 名称")
     if not (root or OPENCODE_DB).is_file():
         raise LookupError("OpenCode 数据库不存在")
-    con = _oc_connect(root)
+    con = None
+    row = None
     try:
+        con = _oc_connect(root)
         row = con.execute(
             "select id, title, directory, time_created, time_updated, cost, model from session where id = ?",
             (session_id,),
         ).fetchone()
+    except sqlite3.Error as exc:
+        raise LookupError(f"读取 OpenCode 数据库失败：{exc}") from None
     finally:
-        con.close()
+        if con is not None:
+            con.close()
     if not row:
         raise LookupError("会话不存在")
     entries = _opencode_transcript(session_id, root)
