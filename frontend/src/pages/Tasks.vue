@@ -1,236 +1,392 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { api, type Agent, type Task } from '../api'
 import { auth } from '../auth'
 import { useLive } from '../live'
-import { TASK_STATUS, fmtCost, fmtTime } from '../labels'
 import StatusTag from '../components/StatusTag.vue'
+import { fmtCost, fmtTime } from '../labels'
+
+interface ConversationRow {
+  id: number
+  name: string
+  member_count: number
+  active_tasks: number
+  last_message: { sender: string; content: string; at: string } | null
+}
+
+interface MessageRow {
+  id: number
+  sender_type: string
+  sender_name: string
+  kind: string
+  content: string
+  task_id: number | null
+  created_at: string
+}
 
 const router = useRouter()
-const can = (role: 'admin' | 'operator' | 'viewer') => auth.can(role)
 
-const data = ref<{ total: number; items: Task[] }>({ total: 0, items: [] })
-const status = ref<string | undefined>(undefined)
-const agentId = ref<number | undefined>(undefined)
-const page = ref(1)
+const tasks = ref<Task[]>([])
 const agents = ref<Agent[]>([])
-const open = ref(false)
+const conversations = ref<ConversationRow[]>([])
+const messages = ref<MessageRow[]>([])
+const loading = ref(false)
+const msgLoading = ref(false)
 
-const statusOptions = computed(() =>
-  Object.entries(TASK_STATUS)
-    .filter(([k]) => k !== 'timeout')
-    .map(([k, v]) => ({ value: k, label: v.text })),
-)
-const agentOptions = computed(() => agents.value.map((a) => ({ value: a.id, label: a.name })))
+const selectedConv = ref<number | null>(null)
+const agentFilter = ref<number | undefined>(undefined)
+const statusFilter = ref<string | undefined>(undefined)
 
-const columns = [
-  { key: 'id', title: 'ID', dataIndex: 'id', width: 70 },
-  { key: 'title', title: '标题', dataIndex: 'title', ellipsis: true },
-  { key: 'status', title: '状态', dataIndex: 'status', width: 100 },
-  { key: 'agents', title: 'Agent' },
-  { key: 'cost', title: '成本', width: 100 },
-  { key: 'created_at', title: '创建时间', dataIndex: 'created_at', width: 140 },
+const sendOpen = ref(false)
+const sending = ref(false)
+const form = reactive({ title: '', prompt: '', agent_ids: [] as number[] })
+
+const STATUS_OPTIONS = [
+  { label: '全部状态', value: '' },
+  { label: '待执行', value: 'pending' },
+  { label: '执行中', value: 'running' },
+  { label: '已完成', value: 'completed' },
+  { label: '失败', value: 'failed' },
+  { label: '已取消', value: 'cancelled' },
+  { label: '等待审批', value: 'waiting_approval' },
 ]
 
-async function load() {
-  const q = new URLSearchParams({ limit: '20', offset: String((page.value - 1) * 20) })
-  if (status.value) q.set('status', status.value)
-  if (agentId.value) q.set('agent_id', String(agentId.value))
+const visibleTasks = computed(() =>
+  selectedConv.value ? tasks.value.filter((t) => ((t as any).conversation_id ?? null) === selectedConv.value) : tasks.value,
+)
+
+const enabledAgents = computed(() => agents.value.filter((a) => a.enabled))
+
+/** 每个会话下有多少任务，用来在左侧列表上标数。 */
+const convStats = computed(() => {
+  const map = new Map<number, { total: number; running: number }>()
+  for (const t of tasks.value) {
+    const cid = (t as any).conversation_id as number | null
+    if (!cid) continue
+    const cur = map.get(cid) ?? { total: 0, running: 0 }
+    cur.total += 1
+    if (['running', 'pending', 'waiting_approval', 'waiting_handoff', 'paused'].includes(t.status)) cur.running += 1
+    map.set(cid, cur)
+  }
+  return map
+})
+
+const conversationList = computed(() =>
+  conversations.value
+    .map((c) => ({ ...c, task_count: convStats.value.get(c.id)?.total ?? 0, live_count: convStats.value.get(c.id)?.running ?? 0 }))
+    .filter((c) => c.task_count > 0 || c.active_tasks > 0),
+)
+
+const runningByAgent = computed(() => {
+  const map = new Map<string, number>()
+  for (const t of tasks.value) {
+    if (!['running', 'pending', 'waiting_approval', 'waiting_handoff'].includes(t.status)) continue
+    const names = new Set((t.runs ?? []).map((r: any) => r.agent_name).filter(Boolean))
+    if (!names.size) {
+      const key = '未分配'
+      map.set(key, (map.get(key) ?? 0) + 1)
+    }
+    for (const n of names) map.set(n, (map.get(n) ?? 0) + 1)
+  }
+  return [...map.entries()].sort((a, b) => b[1] - a[1])
+})
+
+const currentConversation = computed(() => conversations.value.find((c) => c.id === selectedConv.value) ?? null)
+
+function runAgents(t: Task): string[] {
+  const names = (t.runs ?? []).map((r: any) => r.agent_name).filter(Boolean)
+  return [...new Set(names)] as string[]
+}
+
+function taskCost(t: Task): number | null {
+  const costs = (t.runs ?? []).map((r: any) => r.cost_usd).filter((c: any) => typeof c === 'number')
+  return costs.length ? costs.reduce((a: number, b: number) => a + b, 0) : null
+}
+
+async function loadAgents() {
   try {
-    data.value = await api<{ total: number; items: Task[] }>(`/api/tasks?${q}`)
-  } catch (e: any) {
-    message.error(e.message)
+    agents.value = await api<Agent[]>('/api/agents')
+  } catch {
+    agents.value = []
   }
 }
 
-watch([status, agentId, page], load, { immediate: true })
-
-onMounted(() => {
-  api<Agent[]>('/api/agents')
-    .then((a) => (agents.value = a))
-    .catch((e: any) => message.error(e.message))
-})
-
-useLive((m) => {
-  if (m.topic === 'task_updated' || m.topic === 'run_updated') load()
-})
-
-function onTableChange(pag: any) {
-  page.value = pag?.current ?? 1
+async function loadConversations() {
+  try {
+    conversations.value = await api<ConversationRow[]>('/api/conversations')
+  } catch {
+    conversations.value = []
+  }
 }
 
-function taskRow(t: Task) {
-  return { onClick: () => router.push(`/tasks/${t.id}`), style: { cursor: 'pointer' } }
+async function loadTasks() {
+  loading.value = true
+  try {
+    const params = new URLSearchParams({ limit: '200' })
+    if (agentFilter.value) params.set('agent_id', String(agentFilter.value))
+    if (statusFilter.value) params.set('status', String(statusFilter.value))
+    const r = await api<{ items: Task[] }>(`/api/tasks?${params.toString()}`)
+    tasks.value = r.items ?? []
+  } catch (e: any) {
+    message.error(e.message)
+  } finally {
+    loading.value = false
+  }
 }
 
-function uniqueAgents(t: Task) {
-  const seen = new Set<number>()
-  return t.runs
-    .filter((r) => {
-      if (seen.has(r.agent_id)) return false
-      seen.add(r.agent_id)
-      return true
-    })
-    .map((r) => ({ id: r.agent_id, name: r.agent_name }))
+async function loadMessages() {
+  if (!selectedConv.value) {
+    messages.value = []
+    return
+  }
+  msgLoading.value = true
+  try {
+    messages.value = await api<MessageRow[]>(`/api/conversations/${selectedConv.value}/messages?limit=50`)
+  } catch {
+    messages.value = []
+  } finally {
+    msgLoading.value = false
+  }
 }
 
-function taskCost(t: Task): string {
-  const known = t.runs.filter((r) => r.cost_usd != null)
-  return known.length ? fmtCost(known.reduce((s, r) => s + (r.cost_usd ?? 0), 0)) : '—'
+function selectConversation(id: number | null) {
+  selectedConv.value = id
 }
 
-// ---- create task ----
-const formRef = ref<any>()
-const busy = ref(false)
-const newTask = reactive<{ agent_ids: number[]; title: string; prompt: string }>({
-  agent_ids: [],
-  title: '',
-  prompt: '',
-})
-const usableAgents = computed(() => agents.value.filter((a) => a.enabled))
-const usableOptions = computed(() =>
-  usableAgents.value.map((a) => ({
-    value: a.id,
-    label: `${a.name}（${a.adapter_name}${a.model ? ' · ' + a.model : ''}）`,
-  })),
-)
-
-function openNewTask() {
-  newTask.agent_ids = []
-  newTask.title = ''
-  newTask.prompt = ''
-  open.value = true
-  nextTick(() => formRef.value?.clearValidate?.())
+function onMenuClick({ key }: { key: string | number }) {
+  selectConversation(key === 'all' ? null : Number(key))
 }
 
 async function submitTask() {
-  try {
-    await formRef.value?.validate()
-  } catch {
+  if (!form.prompt.trim() || !form.agent_ids.length) {
+    message.warning('请填写任务内容并至少选择一个 Agent')
     return
   }
-  busy.value = true
+  sending.value = true
   try {
-    const t = await api<Task>('/api/tasks', { body: { ...newTask } })
-    message.success(`任务 #${t.id} 已提交`)
-    open.value = false
+    const t = await api<Task>('/api/tasks', {
+      body: { prompt: form.prompt, title: form.title, agent_ids: form.agent_ids },
+    })
+    message.success(`任务 #${t.id} 已派发`)
+    sendOpen.value = false
+    Object.assign(form, { title: '', prompt: '', agent_ids: [] })
+    await loadTasks()
     router.push(`/tasks/${t.id}`)
   } catch (e: any) {
     message.error(e.message)
   } finally {
-    busy.value = false
+    sending.value = false
   }
 }
+
+watch([selectedConv], async () => {
+  await loadMessages()
+})
+watch([agentFilter, statusFilter], () => loadTasks())
+
+useLive((msg) => {
+  if (['task_updated', 'run_updated', 'collab_updated', 'message_created'].includes(msg.topic)) {
+    loadTasks()
+    if (selectedConv.value) loadMessages()
+  }
+})
+
+onMounted(async () => {
+  await Promise.all([loadAgents(), loadConversations(), loadTasks()])
+})
 </script>
 
 <template>
-  <a-card title="任务中心">
-    <template #extra>
-      <a-space wrap>
-        <a-select
-          v-model:value="status"
-          allow-clear
-          placeholder="状态"
-          style="width: 120px"
-          :options="statusOptions"
-          @change="page = 1"
-        />
-        <a-select
-          v-model:value="agentId"
-          allow-clear
-          placeholder="Agent"
-          style="width: 160px"
-          :options="agentOptions"
-          @change="page = 1"
-        />
-        <a-button @click="load">
-          <template #icon><ReloadOutlined /></template>
-        </a-button>
-        <a-button v-if="can('operator')" type="primary" @click="openNewTask">
-          <template #icon><PlusOutlined /></template>
-          发送任务
-        </a-button>
-      </a-space>
-    </template>
+  <a-row :gutter="16">
+    <a-col :xs="24" :md="7" :xl="6">
+      <a-card size="small" title="会话" :bordered="false" :body-style="{ padding: '8px' }">
+        <a-menu mode="inline" :selected-keys="[selectedConv === null ? 'all' : String(selectedConv)]" style="border: none" @click="onMenuClick">
+          <a-menu-item key="all">
+            <a-space>
+              <span>全部任务</span>
+              <a-badge :count="tasks.length" :number-style="{ backgroundColor: '#d9d9d9' }" />
+            </a-space>
+          </a-menu-item>
+          <a-menu-item v-for="c in conversationList" :key="String(c.id)" >
+            <div class="conv-item">
+              <div class="conv-title">
+                <span>{{ c.name }}</span>
+                <a-badge v-if="c.live_count" status="processing" />
+              </div>
+              <div class="conv-meta">
+                {{ c.task_count }} 个任务 · {{ c.member_count }} 个参与者
+              </div>
+            </div>
+          </a-menu-item>
+        </a-menu>
+        <a-empty v-if="!conversationList.length" description="还没有会话" :image-style="{ height: '40px' }" />
+      </a-card>
 
-    <a-table
-      row-key="id"
-      :data-source="data.items"
-      :columns="columns"
-      :scroll="{ x: 800 }"
-      :custom-row="taskRow"
-      :pagination="{ current: page, pageSize: 20, total: data.total, showSizeChanger: false }"
-      @change="onTableChange"
-    >
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'id'">#{{ record.id }}</template>
+      <a-card size="small" title="Agent 正在执行" :bordered="false" style="margin-top: 16px" :body-style="{ padding: '12px' }">
+        <a-list size="small" :data-source="runningByAgent">
+          <template #renderItem="{ item }">
+            <a-list-item>
+              <a-space>
+                <a-tag color="processing">{{ item[1] }}</a-tag>
+                <span>{{ item[0] }}</span>
+              </a-space>
+            </a-list-item>
+          </template>
+        </a-list>
+        <a-empty v-if="!runningByAgent.length" description="当前没有执行中的任务" :image-style="{ height: '40px' }" />
+      </a-card>
+    </a-col>
 
-        <template v-else-if="column.key === 'title'">
-          <a-tag v-if="record.mode === 'auto'" color="gold">自动协作</a-tag>
-          <a-tag v-else-if="record.mode === 'manual'" color="cyan">群聊分工</a-tag>
-          {{ record.title }}
+    <a-col :xs="24" :md="17" :xl="18">
+      <a-card size="small" :bordered="false">
+        <template #title>
+          <a-space>
+            <span>{{ currentConversation ? currentConversation.name : '全部任务' }}</span>
+            <a-tag v-if="currentConversation" color="blue">{{ conversationList.find((c) => c.id === currentConversation?.id)?.member_count ?? 0 }} 个参与者</a-tag>
+            <a-tag v-if="currentConversation?.last_message">{{ fmtTime(currentConversation.last_message.at) }}</a-tag>
+          </a-space>
         </template>
-
-        <template v-else-if="column.key === 'status'">
-          <StatusTag :status="record.status" />
-        </template>
-
-        <template v-else-if="column.key === 'agents'">
-          <a-space :size="4" wrap>
-            <a-tag v-for="a in uniqueAgents(record)" :key="a.id">{{ a.name }}</a-tag>
+        <template #extra>
+          <a-space wrap>
+            <a-select
+              v-model:value="agentFilter"
+              allow-clear
+              placeholder="按 Agent 过滤"
+              style="width: 170px"
+              :options="agents.map((a) => ({ label: a.name, value: a.id }))"
+            />
+            <a-select v-model:value="statusFilter" style="width: 130px" :options="STATUS_OPTIONS" />
+            <a-button size="small" :loading="loading" @click="loadTasks">刷新</a-button>
+            <a-button v-if="auth.can('operator')" type="primary" size="small" @click="sendOpen = true">发送任务</a-button>
           </a-space>
         </template>
 
-        <template v-else-if="column.key === 'cost'">{{ taskCost(record) }}</template>
+        <div v-if="selectedConv" class="msg-panel">
+          <a-spin :spinning="msgLoading">
+            <div v-for="m in messages" :key="m.id" class="msg-row" :class="m.sender_type">
+              <div class="msg-head">
+                <b>{{ m.sender_name }}</b>
+                <a-typography-text type="secondary" style="font-size: 11px">{{ fmtTime(m.created_at) }}</a-typography-text>
+                <a-tag v-if="m.task_id" color="purple" style="cursor: pointer" @click="router.push(`/tasks/${m.task_id}`)">#{{ m.task_id }}</a-tag>
+              </div>
+              <div class="msg-body">{{ m.content }}</div>
+            </div>
+            <a-empty v-if="!messages.length" description="这个会话还没有消息" :image-style="{ height: '40px' }" />
+          </a-spin>
+        </div>
 
-        <template v-else-if="column.key === 'created_at'">{{ fmtTime(record.created_at) }}</template>
-      </template>
-    </a-table>
+        <a-divider style="margin: 12px 0" />
 
-    <a-modal
-      v-model:open="open"
-      title="发送任务"
-      ok-text="发送"
-      :confirm-loading="busy"
-      :width="640"
-      @ok="submitTask"
-      @cancel="open = false"
-    >
-      <a-alert
-        type="info"
-        show-icon
-        style="margin-bottom: 16px"
-        message="任务在平台托管的独立工作目录中执行（data/workspaces/task-<id>），不会访问你的其他文件。选择多个 Agent 时各自独立执行同一任务，结果在同一 Trace 中串联。"
-      />
-      <a-form ref="formRef" :model="newTask" layout="vertical">
-        <a-form-item
-          name="agent_ids"
-          label="执行 Agent"
-          :rules="[{ required: true, type: 'array', message: '至少选择一个 Agent' }]"
-        >
-          <a-select
-            v-model:value="newTask.agent_ids"
-            mode="multiple"
-            :options="usableOptions"
-            placeholder="请选择执行 Agent"
-          >
-            <template #notFoundContent>
-              <a-typography-text type="secondary">
-                没有已启用的 Agent，请先到「Agent 管理」接入
-              </a-typography-text>
+        <a-spin :spinning="loading">
+          <a-list :data-source="visibleTasks" item-layout="vertical" size="small">
+            <template #renderItem="{ item }">
+              <a-list-item>
+                <a-list-item-meta>
+                  <template #title>
+                    <a-space>
+                      <a class="task-title" @click="router.push(`/tasks/${item.id}`)">#{{ item.id }} {{ item.title }}</a>
+                      <StatusTag :status="item.status" />
+                      <a-tag v-if="item.mode">{{ item.mode === 'auto' ? '自动协作' : item.mode === 'manual' ? '人工指定' : item.mode }}</a-tag>
+                    </a-space>
+                  </template>
+                  <template #description>
+                    <a-space wrap size="small">
+                      <a-tag v-for="name in runAgents(item)" :key="name" color="blue">{{ name }}</a-tag>
+                      <a-typography-text type="secondary">{{ fmtTime(item.created_at) }}</a-typography-text>
+                      <a-typography-text v-if="taskCost(item) !== null" type="secondary">成本 {{ fmtCost(taskCost(item)) }}</a-typography-text>
+                      <a-typography-text v-if="item.error" type="danger">{{ item.error.slice(0, 80) }}</a-typography-text>
+                    </a-space>
+                  </template>
+                </a-list-item-meta>
+                <template #actions>
+                  <a @click="router.push(`/tasks/${item.id}`)">查看详情</a>
+                </template>
+              </a-list-item>
             </template>
-          </a-select>
-        </a-form-item>
-        <a-form-item name="title" label="标题（可选）">
-          <a-input v-model:value="newTask.title" placeholder="默认取任务内容首行" />
-        </a-form-item>
-        <a-form-item name="prompt" label="任务内容" :rules="[{ required: true, message: '请输入任务内容' }]">
-          <a-textarea v-model:value="newTask.prompt" :rows="8" placeholder="描述你希望 Agent 完成的任务……" />
-        </a-form-item>
-      </a-form>
-    </a-modal>
-  </a-card>
+          </a-list>
+          <a-empty v-if="!loading && !visibleTasks.length" description="没有符合条件的任务" />
+        </a-spin>
+      </a-card>
+    </a-col>
+  </a-row>
+
+  <a-modal v-model:open="sendOpen" title="发送任务" :confirm-loading="sending" @ok="submitTask" ok-text="派发">
+    <a-form layout="vertical">
+      <a-form-item label="标题（可选）">
+        <a-input v-model:value="form.title" placeholder="留空则取任务内容首行" />
+      </a-form-item>
+      <a-form-item label="任务内容" required>
+        <a-textarea v-model:value="form.prompt" :rows="6" placeholder="描述要 Agent 完成的工作" />
+      </a-form-item>
+      <a-form-item label="执行 Agent" required>
+        <a-select
+          v-model:value="form.agent_ids"
+          mode="multiple"
+          placeholder="可多选，任务会并行派发"
+          :options="enabledAgents.map((a) => ({ label: `${a.name}（${a.adapter_name}）`, value: a.id }))"
+        />
+      </a-form-item>
+    </a-form>
+  </a-modal>
 </template>
+
+<style scoped>
+.conv-item {
+  padding: 2px 0;
+}
+
+.conv-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.conv-meta {
+  font-size: 11px;
+  color: #999;
+}
+
+.msg-panel {
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.msg-row {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fafafa;
+  margin-bottom: 8px;
+}
+
+.msg-row.agent {
+  background: #f0f5ff;
+}
+
+.msg-row.user {
+  background: #f6ffed;
+}
+
+.msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  color: #333;
+  max-height: 120px;
+  overflow: hidden;
+}
+
+.task-title {
+  color: #1677ff;
+}
+</style>

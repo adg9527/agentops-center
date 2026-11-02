@@ -97,12 +97,14 @@ async def create_task(body: TaskIn, request: Request, user: User = Depends(requi
 
 @router.get("/tasks")
 async def list_tasks(status: str | None = None, agent_id: int | None = None, project_id: int | None = None,
-                     include_subtasks: bool = False, mode: str | None = None,
+                     conversation_id: int | None = None, include_subtasks: bool = False, mode: str | None = None,
                      limit: int = 50, offset: int = 0, _: User = Depends(current_user),
                      session: AsyncSession = Depends(get_session)):
     q = select(Task)
     if not include_subtasks:
         q = q.where(Task.parent_task_id.is_(None))
+    if conversation_id:
+        q = q.where(Task.conversation_id == conversation_id)
     if mode:
         q = q.where(Task.mode == mode)
     if status:
