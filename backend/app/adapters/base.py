@@ -122,6 +122,10 @@ class AgentAdapter(ABC):
         """Return a user-facing error if `model` can't work with this platform, else None."""
         return None
 
+    async def normalize_model(self, model: str, config: dict) -> str:
+        """Canonicalize a model id before it is stored or used (default: unchanged)."""
+        return model
+
     def describe(self) -> dict:
         return {
             "type": self.type,

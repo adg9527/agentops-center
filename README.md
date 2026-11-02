@@ -140,7 +140,7 @@ npx vite              # 访问 http://127.0.0.1:5173
 ## 使用流程
 
 1. **Agent 管理 → 接入 Agent**：选择 Claude Code / OpenCode / **LangChain Agent（平台内置）** / Codex / 通用 HTTP，填写模型后保存，点「测试连接」。
-   - OpenCode 的模型必须是 `provider/模型名`，例如 `opencode/deepseek-v4.1-flash`；
+   - OpenCode 的模型是 `provider/模型名`（如 `opencode/deepseek-v4.1-flash`）：只填模型名也能用，保存时按本机 `opencode models` 自动补全，运行前还会再兜一次；
    - LangChain Agent 默认走 DeepSeek，密钥读取环境变量 `DEEPSEEK_API_KEY`（也可在页面填写，落库时加密）。
 2. **任务中心 → 发送任务**：勾选一个或多个 Agent，输入任务描述。
 3. **任务详情**：查看每个 Agent 的实时输出、Token、成本，以及工具调用、模型调用、权限拒绝等事件；可随时终止。

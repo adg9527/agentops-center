@@ -45,6 +45,8 @@
 - `http_agent._client` 在 `NO_PROXY` 含带方括号的 IPv6（如 `[::1]`）时，httpx 会把该项解析成非法 URL 模式 `*[::1]` 并在建连前抛 `InvalidURL`。现在构造客户端时会临时去掉方括号（`::1` 覆盖同一主机），构建后再恢复环境变量。
 - 后端渲染 SPA 外壳（`_render_shell`）的挂载点从 `#root` 改为 `#app`，与 Vue 的 `index.html` 保持一致。
 
+- OpenCode 的模型 id 必须是 `provider/model`，而用户习惯只填模型名（如 `deepseek-v4.1-flash`），此前会在协作步骤里直接失败。现在 `AgentAdapter.normalize_model` 成为统一钩子：OpenCode 用 `opencode models` 的结果把裸名补全成 `opencode/<名>`（同名时优先 `opencode/`），保存 Agent 与每次运行前都会归一化，旧数据也能直接跑。
+
 ## 2. 前端：Vue 3 重写
 
 ### 2.1 结构

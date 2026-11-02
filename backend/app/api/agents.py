@@ -169,14 +169,15 @@ async def create_agent(body: AgentIn, request: Request, user: User = Depends(req
     if not project_id or not await session.get(Project, project_id):
         raise HTTPException(422, "项目不存在")
     config = _validate_config(adapter, body.config)
-    if err := await adapter.validate_model(body.model.strip(), config):
+    model = await adapter.normalize_model(body.model.strip(), config)
+    if err := await adapter.validate_model(model, config):
         raise HTTPException(422, err)
     a = Agent(
         project_id=project_id, name=body.name, adapter_type=adapter.type, platform=adapter.platform,
         transport=adapter.transport, description=body.description, role=body.role,
         capability_tags=body.capability_tags, config=config,
         secret_config=encrypt_secrets({k: v for k, v in body.secrets.items() if v and _is_secret(adapter, k)}),
-        model=body.model.strip(), enabled=body.enabled, max_concurrency=body.max_concurrency,
+        model=model, enabled=body.enabled, max_concurrency=body.max_concurrency,
         timeout_sec=body.timeout_sec, max_retries=body.max_retries,
     )
     session.add(a)
@@ -206,9 +207,10 @@ async def update_agent(agent_id: int, body: AgentPatch, request: Request, user: 
         a.config = _validate_config(adapter, {**a.config, **body.config})
         runtime_changed = True
     if "model" in changed:
-        if err := await adapter.validate_model((body.model or "").strip(), a.config):
+        model = await adapter.normalize_model((body.model or "").strip(), a.config)
+        if err := await adapter.validate_model(model, a.config):
             raise HTTPException(422, err)
-        a.model = (body.model or "").strip()
+        a.model = model
         runtime_changed = True
     if body.secrets is not None:
         current = decrypt_secrets(a.secret_config)

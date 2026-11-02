@@ -244,7 +244,7 @@ function filterModel(input: string, option: any) {
 
 const modelExtra = computed(() =>
   formType.value === 'opencode'
-    ? `必须是「provider/模型名」格式，如 opencode/big-pickle（本机检测到 ${models.value.length} 个可选模型）`
+    ? `需要「provider/模型名」；只填模型名时保存会按本机检测到的 ${models.value.length} 个模型自动补全（如 opencode/deepseek-v4.1-flash）`
     : '留空使用 Agent 默认模型。Claude Code 例如 haiku / sonnet',
 )
 

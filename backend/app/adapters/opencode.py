@@ -97,6 +97,25 @@ class OpenCodeParser:
         return r
 
 
+def pick_model(models: list[str], model: str) -> str:
+    """Resolve a bare model name to the `provider/model` id opencode expects.
+
+    Users type "deepseek-v4.1-flash"; opencode only accepts "opencode/deepseek-v4.1-flash".
+    When exactly one detected model carries that suffix we complete it; `opencode/<name>`
+    wins over other providers when both exist.
+    """
+    model = (model or "").strip()
+    if not model or "/" in model or not models:
+        return model
+    candidates = [m for m in models if m.split("/", 1)[1] == model]
+    if not candidates:
+        return model
+    preferred = f"opencode/{model}"
+    if preferred in candidates:
+        return preferred
+    return sorted(candidates)[0]
+
+
 class OpenCodeAdapter(AgentAdapter):
     type = "opencode"
     display_name = "OpenCode"
@@ -141,6 +160,12 @@ class OpenCodeAdapter(AgentAdapter):
             self._models_cache = (time.monotonic(), exe, models)
         return models
 
+    async def normalize_model(self, model: str, config: dict) -> str:
+        """Complete a bare model name using `opencode models` (unchanged when unresolvable)."""
+        exe = resolve_opencode(config.get("executable"))
+        models = await self.list_models(exe) if exe else []
+        return pick_model(models, model)
+
     async def validate_model(self, model: str, config: dict) -> str | None:
         # opencode needs "provider/model"; a bare name fails at run time with an opaque
         # {"name":"UnknownError","data":{"message":"Unexpected server error..."}}.
@@ -148,6 +173,7 @@ class OpenCodeAdapter(AgentAdapter):
             return None
         exe = resolve_opencode(config.get("executable"))
         models = await self.list_models(exe) if exe else []
+        model = pick_model(models, model)
         if "/" not in model:
             candidates = [m for m in models if m.split("/", 1)[1] == model]
             hint = f"，可选：{'、'.join(candidates)}" if candidates else "（可点「测试连接」后在下拉框中选择）"
@@ -181,6 +207,8 @@ class OpenCodeAdapter(AgentAdapter):
             return RunResult(ok=False, error="未找到 opencode 原生可执行文件")
         if err := await self.validate_model(req.model, req.config):
             return RunResult(ok=False, error=err)
+        # a bare name typed by the user is completed to provider/model, so old agents keep working
+        req.model = await self.normalize_model(req.model, req.config)
         c = req.config
         # --dir is required: opencode resolves its project from $PWD rather than the process cwd.
         argv = [exe, "run", "--format", "json", "--dir", str(req.workdir)]

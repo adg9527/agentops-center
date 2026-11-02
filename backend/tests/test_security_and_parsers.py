@@ -142,8 +142,8 @@ def test_spa_shell_rendered_from_manifest():
     assert '<link rel="stylesheet" href="/assets/x.css">' in html
 
 
-async def test_opencode_bare_model_name_rejected(monkeypatch):
-    """A bare model name (no provider/) made opencode fail with an opaque UnknownError at run time."""
+async def test_opencode_bare_model_name_is_completed_or_rejected(monkeypatch):
+    """A bare model name is completed to `provider/model`; an unknown one still fails fast."""
     from app.adapters.opencode import OpenCodeAdapter
 
     a = OpenCodeAdapter()
@@ -151,13 +151,22 @@ async def test_opencode_bare_model_name_rejected(monkeypatch):
     async def fake_models(exe, refresh=False):
         return ["opencode/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1-flash", "opencode/big-pickle"]
 
+    async def emit(_event):
+        return None
+
     monkeypatch.setattr(a, "list_models", fake_models)
     monkeypatch.setattr("app.adapters.opencode.resolve_opencode", lambda _: "opencode.exe")
-    err = await a.validate_model("deepseek-v4.1-flash", {})
-    assert "provider/" in err and "opencode/deepseek-v4.1-flash" in err and "opencode-go/deepseek-v4.1-flash" in err
+
+    # a resolvable bare name is accepted, and normalized to the provider-prefixed id
+    assert await a.validate_model("deepseek-v4.1-flash", {}) is None
+    assert await a.normalize_model("deepseek-v4.1-flash", {}) == "opencode/deepseek-v4.1-flash"
     assert await a.validate_model("opencode/deepseek-v4.1-flash", {}) is None
+
+    # unknown names still explain the required format instead of failing opaquely at run time
+    assert "provider/" in await a.validate_model("no-such-model", {})
     assert "没有模型" in await a.validate_model("opencode/nope", {})
     assert await a.validate_model("", {}) is None
-    r = await a.run(RunRequest(prompt="x", workdir=Path("."), config={}, secrets={}, model="deepseek-v4.1-flash", timeout_sec=5),
-                    lambda e: None, None)
+
+    r = await a.run(RunRequest(prompt="x", workdir=Path("."), config={}, secrets={}, model="no-such-model", timeout_sec=5),
+                    emit, None)
     assert not r.ok and "provider/" in r.error  # fails fast with a clear message, no process launched
