@@ -289,3 +289,64 @@ class Approval(Base):
     decided_at: Mapped[datetime | None] = mapped_column(nullable=True)
     comment: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+# ---------------------------------------------------------------- assets (phase 4)
+
+
+class McpServer(Base):
+    """An MCP server agents can use: stdio command or Streamable HTTP endpoint."""
+
+    __tablename__ = "mcp_servers"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    transport: Mapped[str] = mapped_column(String(24), default="stdio")  # stdio | streamable-http
+    command: Mapped[str] = mapped_column(String(256), default="")
+    args: Mapped[list] = mapped_column(default=list)
+    url: Mapped[str] = mapped_column(String(512), default="")
+    headers: Mapped[dict] = mapped_column(default=dict)
+    env: Mapped[dict] = mapped_column(default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    tools: Mapped[list] = mapped_column(default=list)
+    last_check_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_check_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_check_detail: Mapped[str] = mapped_column(Text, default="")
+    config_version: Mapped[int] = mapped_column(Integer, default=1)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class Skill(Base):
+    """A reusable instruction bundle (markdown + optional extra files)."""
+
+    __tablename__ = "skills"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    files: Mapped[list] = mapped_column(default=list)  # [{"path": str, "content": str}]
+    tags: Mapped[list] = mapped_column(default=list)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class PromptTemplate(Base):
+    """A versioned prompt template with `{{variable}}` placeholders."""
+
+    __tablename__ = "prompt_templates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    content: Mapped[str] = mapped_column(Text, default="")
+    variables: Mapped[list] = mapped_column(default=list)
+    tags: Mapped[list] = mapped_column(default=list)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)

@@ -9,36 +9,9 @@ const pages: RouteRecordRaw[] = [
   { path: 'monitor', name: 'monitor', component: () => import('../pages/Monitor.vue') },
   { path: 'settings', name: 'settings', component: () => import('../pages/Settings.vue') },
   { path: 'chat', name: 'chat', component: () => import('../pages/Chat.vue') },
-  {
-    path: 'mcp',
-    name: 'mcp',
-    component: () => import('../pages/Placeholder.vue'),
-    props: {
-      phase: 4,
-      title: 'MCP 管理',
-      items: ['MCP Server 增删改', '连接测试与 tools/list 工具清单', '启停（通过运行时 --mcp-config 真正生效）', '调用记录与关联 Agent', '版本与评测记录'],
-    },
-  },
-  {
-    path: 'skills',
-    name: 'skills',
-    component: () => import('../pages/Placeholder.vue'),
-    props: {
-      phase: 4,
-      title: 'Skill 管理',
-      items: ['多文件 Skill 导入/编辑', 'Skill Adapter 格式转换', '版本 / 对比 / 回滚', '使用记录与评测'],
-    },
-  },
-  {
-    path: 'prompts',
-    name: 'prompts',
-    component: () => import('../pages/Placeholder.vue'),
-    props: {
-      phase: 4,
-      title: 'Prompt 管理',
-      items: ['模板变量', '版本 / 发布 / 回滚 / 对比', '测试与评测追溯到准确版本'],
-    },
-  },
+  { path: 'mcp', name: 'mcp', component: () => import('../pages/Mcp.vue') },
+  { path: 'skills', name: 'skills', component: () => import('../pages/Skills.vue') },
+  { path: 'prompts', name: 'prompts', component: () => import('../pages/Prompts.vue') },
   {
     path: 'evals',
     name: 'evals',
