@@ -5,8 +5,8 @@ import {
   ApiOutlined,
   AppstoreOutlined,
   BarChartOutlined,
-  BranchesOutlined,
   DashboardOutlined,
+  FolderOpenOutlined,
   HistoryOutlined,
   ExperimentOutlined,
   LogoutOutlined,
@@ -37,7 +37,7 @@ const ITEMS: { key: string; icon: any; label: string; phase?: number }[] = [
   { key: '/sessions', icon: HistoryOutlined, label: '本地会话' },
   { key: '/monitor', icon: MonitorOutlined, label: '执行监控' },
   { key: '/evals', icon: ExperimentOutlined, label: '自动化评测' },
-  { key: '/artifacts', icon: BranchesOutlined, label: '评测报告 / 版本' },
+  { key: '/artifacts', icon: FolderOpenOutlined, label: '文件管理' },
   { key: '/settings', icon: SettingOutlined, label: '系统设置' },
 ]
 

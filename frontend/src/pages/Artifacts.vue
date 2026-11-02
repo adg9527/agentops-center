@@ -207,7 +207,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <a-card title="评测报告 / 版本管理" :bordered="false">
+  <a-card title="文件管理" :bordered="false">
     <template #extra>
       <a-space>
         <a-button v-if="tab === 'reports'" size="small" :loading="runsLoading" @click="loadRuns">刷新</a-button>
