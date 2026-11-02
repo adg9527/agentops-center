@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 60 * 12
     # Global cap on concurrently running agent processes
     max_global_concurrency: int = 4
+
+    # Orchestration chains (planning / summarising) run on a LangChain chat model.
+    # Leave the key unset and the coordinator falls back to the agent-driven path.
+    orchestrator_provider: str = "deepseek"
+    orchestrator_model: str = "deepseek-chat"
+    orchestrator_base_url: str | None = None
+    orchestrator_api_key: str | None = None
+    orchestrator_api_key_env: str = "DEEPSEEK_API_KEY"
+    orchestrator_temperature: float = 0.0
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     @property

@@ -28,6 +28,11 @@ from ..models import (
 from .event_bus import bus
 from .task_runner import runner
 from .trace import new_span_id, record_event, task_span_id
+from ..chains import planner as chain_planner
+from ..chains import summarizer as chain_summarizer
+from ..chains.callbacks import PlatformCallbackHandler
+from ..chains.llm import llm_available
+from ..chains.plan import PlanError, validate_plan
 
 log = logging.getLogger(__name__)
 
@@ -41,10 +46,6 @@ ROLE_INSTRUCTION = {
     "reviewer": "审查前序成员的结果：逐条指出问题与改进建议，最后给出结论（通过 / 需修改）。",
     "summarizer": "汇总所有成员的工作，形成一份面向用户的最终报告。",
 }
-
-
-class PlanError(ValueError):
-    pass
 
 
 # ------------------------------------------------------------------ pure helpers (unit-tested)
@@ -81,56 +82,11 @@ def _first_json(text: str, label: str | None = None) -> dict | None:
 
 
 def parse_plan(text: str, members: dict[str, int]) -> list[dict]:
-    """Validate a coordinator plan. `members` maps member name -> agent_id. Raises PlanError."""
+    """Validate a coordinator plan emitted as JSON text. Raises PlanError."""
     data = _first_json(text)
     if not isinstance(data, dict) or not isinstance(data.get("steps"), list) or not data["steps"]:
         raise PlanError("主控输出中没有找到合法的 JSON 计划（需要 {\"steps\": [...]}）")
-    steps = data["steps"]
-    if len(steps) > MAX_PLAN_STEPS:
-        raise PlanError(f"计划步骤过多（{len(steps)} > {MAX_PLAN_STEPS}）")
-    lowered = {k.lower(): v for k, v in members.items()}
-    out, keys = [], set()
-    for i, s in enumerate(steps):
-        if not isinstance(s, dict):
-            raise PlanError(f"第 {i + 1} 个步骤不是对象")
-        key = str(s.get("id") or f"s{i + 1}")
-        if key in keys:
-            raise PlanError(f"步骤 id 重复: {key}")
-        agent_name = str(s.get("agent") or "")
-        agent_id = members.get(agent_name) or lowered.get(agent_name.lower())
-        if not agent_id:
-            raise PlanError(f"步骤 {key} 指定的成员不存在: {agent_name!r}（可选: {', '.join(members)}）")
-        instruction = str(s.get("instruction") or "").strip()
-        if not instruction:
-            raise PlanError(f"步骤 {key} 缺少 instruction")
-        role = s.get("role") if s.get("role") in ROLE_STAGE else MemberRole.executor.value
-        deps = [str(d) for d in (s.get("depends_on") or [])]
-        keys.add(key)
-        out.append({"key": key, "agent_id": agent_id, "title": str(s.get("title") or instruction[:60]),
-                    "instruction": instruction, "role": role, "depends_on": deps})
-    for s in out:
-        bad = [d for d in s["depends_on"] if d not in keys]
-        if bad:
-            raise PlanError(f"步骤 {s['key']} 依赖不存在的步骤: {bad}")
-    _check_acyclic({s["key"]: s["depends_on"] for s in out})
-    return out
-
-
-def _check_acyclic(graph: dict[str, list[str]]):
-    state: dict[str, int] = {}
-
-    def visit(n: str):
-        if state.get(n) == 1:
-            raise PlanError(f"计划存在循环依赖（涉及 {n}）")
-        if state.get(n) == 2:
-            return
-        state[n] = 1
-        for d in graph.get(n, []):
-            visit(d)
-        state[n] = 2
-
-    for n in graph:
-        visit(n)
+    return validate_plan(data["steps"], members, MAX_PLAN_STEPS)
 
 
 def extract_handoff(text: str) -> dict | None:
@@ -523,6 +479,9 @@ class Orchestrator:
             agent = await s.get(Agent, st.agent_id)
             members = await _members(s, root.conversation_id)
             member_role = next((m.role for m, a in members if a.id == agent.id), st.role)
+            if st.kind in ("plan", "summary") and llm_available():
+                await self._run_chain_step(root, st, agent, members)
+                return
             if st.kind == "plan":
                 prompt = plan_prompt(root.prompt, members, await _history(s, root.conversation_id, root.id))
             elif st.kind == "summary":
@@ -592,6 +551,83 @@ class Orchestrator:
         elif ok and st.kind == "work":
             await self._propagate(root, st)
             await self._agent_handoff(root, st, agent)
+        notify(root.id, root.conversation_id)
+
+    async def _run_chain_step(self, root: Task, st: TaskStep, agent: Agent,
+                              members: list[tuple[ConversationMember, Agent]]) -> None:
+        """Plan/summary step executed by an LCEL chain instead of a dispatched agent.
+
+        The chain runs in-process (no subtask, no external CLI), but it still records an
+        AgentRun row so token/cost accounting and the run history stay uniform.
+        """
+        handler = PlatformCallbackHandler()
+        started = utcnow()
+        history = ""
+        done: list[tuple[TaskStep, str]] = []
+        async with session_factory()() as s:
+            if st.kind == "plan":
+                history = await _history(s, root.conversation_id, root.id)
+            else:
+                done = list((await s.execute(
+                    select(TaskStep, Agent.name).join(Agent, Agent.id == TaskStep.agent_id)
+                    .where(TaskStep.root_task_id == root.id, TaskStep.kind == "work")
+                    .order_by(TaskStep.seq, TaskStep.id)
+                )).all())
+
+        text: str | None = None
+        error: str | None = None
+        try:
+            if st.kind == "plan":
+                plan = await chain_planner.make_plan(
+                    request=root.prompt, members=members, history=history,
+                    max_steps=MAX_PLAN_STEPS, callbacks=[handler],
+                )
+                names = {a.id: a.name for _m, a in members}
+                text = json.dumps({"steps": [
+                    {"id": p["key"], "agent": names[p["agent_id"]], "role": p["role"], "title": p["title"],
+                     "instruction": p["instruction"], "depends_on": p["depends_on"]} for p in plan
+                ]}, ensure_ascii=False)
+            else:
+                text = await chain_summarizer.summarize_results(
+                    request=root.prompt,
+                    results=[(x.title, n, x.output_text or f"（{x.status}）{x.error or ''}") for x, n in done],
+                    callbacks=[handler],
+                )
+        except Exception as e:  # a failing chain fails this step, it must not kill the root task
+            log.exception("chain step %s (%s) failed", st.id, st.kind)
+            error = f"{type(e).__name__}: {e}"[:2000]
+
+        finished = utcnow()
+        usage = handler.usage
+        async with session_factory()() as s:
+            row = await s.get(TaskStep, st.id)
+            row.output_text = text
+            row.error = error
+            row.status = (StepStatus.completed.value if error is None else StepStatus.failed.value)
+            row.finished_at = finished
+            s.add(AgentRun(
+                task_id=root.id, agent_id=agent.id, agent_config_version=agent.config_version,
+                status=RunStatus.completed.value if error is None else RunStatus.failed.value,
+                span_id=new_span_id(), output_text=text, error=error, model_used=usage.model,
+                input_tokens=usage.input_tokens or None, output_tokens=usage.output_tokens or None,
+                started_at=started, finished_at=finished,
+                duration_ms=int((finished - started).total_seconds() * 1000),
+            ))
+            await s.commit()
+            step = await s.get(TaskStep, st.id)
+
+        await post_message(
+            root.conversation_id,
+            text if error is None else f"「{st.title}」生成失败：{error}",
+            sender_type="agent" if error is None else "system",
+            sender_id=agent.id if error is None else None,
+            sender_name=agent.name if error is None else "系统",
+            kind={"plan": "plan", "summary": "result"}.get(st.kind, "result") if error is None else "status",
+            task_id=root.id, step_id=st.id,
+            data={"step_key": st.step_key, "role": st.role, "status": step.status, "engine": "langchain"},
+        )
+        if error is None and st.kind == "plan":
+            await self._apply_plan(root, step)
         notify(root.id, root.conversation_id)
 
     async def _apply_plan(self, root: Task, plan_step: TaskStep):

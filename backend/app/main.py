@@ -70,9 +70,9 @@ def _render_shell(manifest: dict) -> str:
     return (
         '<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1.0"><title>AgentOps Center</title>'
-        "<style>html,body,#root{height:100%;margin:0;background:#0b0f17}</style>"
+        "<style>html,body,#app{height:100%;margin:0;background:#f5f6fa}</style>"
         f'{css}<script type="module" crossorigin src="/{entry["file"]}"></script></head>'
-        '<body><div id="root"></div></body></html>'
+        '<body><div id="app"></div></body></html>'
     )
 
 

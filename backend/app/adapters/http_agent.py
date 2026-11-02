@@ -6,6 +6,8 @@ transport, so tool/token capabilities are declared unsupported/unknown.
 """
 
 import asyncio
+import contextlib
+import os
 import time
 from urllib.parse import urlparse
 
@@ -14,11 +16,38 @@ import httpx
 from .base import AdapterEvent, AgentAdapter, ConfigField, ConnectionResult, Emit, Level, RunRequest, RunResult
 
 
+@contextlib.contextmanager
+def _httpx_safe_proxy_env():
+    """Make NO_PROXY safe for httpx while a client is built.
+
+    httpx parses every NO_PROXY entry as a URL pattern; a bracketed IPv6 entry such as
+    "[::1]" becomes the pattern "*[::1]" and raises InvalidURL. The unbracketed form
+    covers the same host, so strip brackets for the duration of the client build.
+    """
+    keys = ("NO_PROXY", "no_proxy")
+    saved = {k: os.environ.get(k) for k in keys}
+    try:
+        for key, value in saved.items():
+            if not value:
+                continue
+            os.environ[key] = ",".join(part.strip().strip("[]") for part in value.split(",") if part.strip())
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _client(url: str, timeout: float) -> httpx.AsyncClient:
     # Loopback agents must not be routed through a system HTTP(S)_PROXY.
     host = urlparse(url).hostname or ""
     local = host in ("localhost", "::1") or host.startswith("127.")
-    return httpx.AsyncClient(timeout=timeout, trust_env=not local)
+    if local:
+        return httpx.AsyncClient(timeout=timeout, trust_env=False)
+    with _httpx_safe_proxy_env():
+        return httpx.AsyncClient(timeout=timeout, trust_env=True)
 
 
 def dig(obj, path: str):

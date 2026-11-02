@@ -6,12 +6,12 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white">
   <img alt="LangChain" src="https://img.shields.io/badge/LangChain-1.x-1C3C3C">
-  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black">
-  <img alt="Ant Design" src="https://img.shields.io/badge/Ant%20Design-5-1677FF?logo=antdesign&logoColor=white">
-  <img alt="Status" src="https://img.shields.io/badge/status-phase%202%20done-brightgreen">
+  <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white">
+  <img alt="Ant Design Vue" src="https://img.shields.io/badge/Ant%20Design%20Vue-4-1677FF?logo=antdesign&logoColor=white">
+  <img alt="Status" src="https://img.shields.io/badge/status-phase%203%20wip-orange">
 </p>
 
-AgentOps Center 不是又一个 Agent 框架，而是**给已有的 Agent 做一个统一的“运维与协作控制台”**。它不替换 Claude Code / OpenCode 的交互方式，也不要求你把 Agent 重写成 API —— 平台直接驱动本机 CLI 子进程，把流式输出、工具调用、Token 与成本解析成结构化事件；同时内置一套基于 **LangChain** 的平台原生智能体，随平台一起部署。
+AgentOps Center 不是又一个 Agent 框架，而是**给已有的 Agent 做一个统一的“运维与协作控制台”**。它不替换 Claude Code / OpenCode 的交互方式，也不要求你把 Agent 重写成 API —— 平台直接驱动本机 CLI 子进程，把流式输出、工具调用、Token 与成本解析成结构化事件；同时内置一套基于 **LangChain** 的平台原生智能体，并用 LangChain 的 LCEL 链承担多 Agent 的规划与汇总。
 
 ---
 
@@ -20,6 +20,7 @@ AgentOps Center 不是又一个 Agent 框架，而是**给已有的 Agent 做一
 - [为什么需要它](#为什么需要它)
 - [功能特性](#功能特性)
 - [系统架构](#系统架构)
+- [LangChain 编排引擎](#langchain-编排引擎)
 - [技术栈](#技术栈)
 - [快速开始](#快速开始)
 - [使用流程](#使用流程)
@@ -61,8 +62,9 @@ AgentOps Center 把这些收敛成一个本地 Web 平台：**Agent 有台账、
 
 ```mermaid
 flowchart LR
-  U["浏览器<br/>React + Ant Design + Ant Design Charts"] -->|REST + SSE| A["FastAPI 应用"]
+  U["浏览器<br/>Vue 3 + Ant Design Vue + ECharts"] -->|REST + WebSocket| A["FastAPI 应用"]
   A --> S["服务层<br/>任务调度 · 协作编排 · 事件总线 · Trace · 审计"]
+  S --> L["LangChain 编排层<br/>Planner 链 · Summarizer 链 · 回调"]
   S --> DB[("SQLite / PostgreSQL")]
   S --> W[["data/workspaces/task-<id>"]]
   S --> AD["Agent Adapter 层"]
@@ -76,19 +78,35 @@ flowchart LR
 几个关键设计：
 
 - **Adapter 隔离差异**：每个 CLI 的流式协议（Claude Code 的 `stream-json`、OpenCode 的事件流等）都被归一化成统一事件模型，上层服务不感知具体 Agent。
+- **统一执行入口**：所有适配器都被包成 LangChain `Runnable`（`AdapterRunnable`），任务执行只有一个入口，后续接重试、批处理、hooks 不需要改调用点。
 - **子进程 + 独立工作目录**：任务在 `data/workspaces/task-<id>` 里跑，互不污染；平台不修改 Agent 自身配置。
-- **事件总线**：执行过程既落库（可回放、可审计），也通过 SSE 推给前端（实时可见）。
-- **崩溃可恢复**：启动时对未完成的任务与协作会话做恢复，而不是留下“僵尸运行中”。
+- **事件总线**：执行过程既落库（可回放、可审计），也通过 WebSocket 推给前端（实时可见）。
+- **崩溃可恢复**：启动时对未完成的任务与协作会话做恢复，而不是留在“僵尸运行中”。
+
+## LangChain 编排引擎
+
+“自动协作”模式下，主控不再只是又一个被派任务的 Agent —— 规划与汇总由平台自己的 LangChain 链完成（`backend/app/chains/`）：
+
+| 组件 | 作用 |
+| --- | --- |
+| `llm.py` | 统一构造 ChatModel：DeepSeek（OpenAI 兼容）、OpenAI、Anthropic；未配置密钥时返回 `None`，编排自动回退到“主控 Agent 出计划”的旧路径 |
+| `planner.py` | LCEL：`ChatPromptTemplate | model.with_structured_output(Plan)`，模型被约束成 `{steps:[{id,agent,role,title,instruction,depends_on}]}`，不再靠正则从自由文本里抠 JSON |
+| `plan.py` | 计划校验：成员是否存在、id 是否重复、依赖是否成环；链式输出与旧 JSON 解析共用同一份规则 |
+| `summarizer.py` | LCEL：`SUMMARY_PROMPT | model | StrOutputParser()`，把各步骤结果汇总成最终报告 |
+| `callbacks.py` | `AsyncCallbackHandler`：把每次模型调用、工具调用投影成平台事件，累计 token 与耗时 |
+| `runnable.py` | `AdapterRunnable`：把任意 AgentAdapter 包装成 `Runnable`，让 CLI / HTTP / 原生 Agent 走同一条执行路径 |
+
+编排产出的步骤依旧落在 `TaskStep` 表里，由 DAG 调度器执行；规划链本身也会写一条 `AgentRun`，所以 Token、成本、历史在界面上与外部 Agent 一视同仁。链式调用失败只会让当前步骤失败，不会拖垮整个协作任务。
 
 ## 技术栈
 
 | 层 | 选型 |
 | --- | --- |
 | 后端 | Python 3.11+ · FastAPI · SQLAlchemy 2.0 (async) · Pydantic Settings · PyJWT · Argon2 · cryptography |
-| Agent / 模型 | 本机 CLI 子进程（Claude Code、OpenCode、Codex）· LangChain 1.x（DeepSeek / OpenAI / Anthropic 兼容） |
+| 编排 / Agent | LangChain 1.x（LCEL、`create_agent`、结构化输出、回调）· 本机 CLI 子进程（Claude Code、OpenCode、Codex）· OpenAI 兼容接口 |
 | 存储 | SQLite（默认，零依赖）· PostgreSQL 16（可选，见 `docker-compose.yml`） |
-| 前端 | React 18 · TypeScript · Ant Design 5 · Ant Design Charts · Vite |
-| 测试 | pytest（离线用例 + `real_agent` 真实调用用例） |
+| 前端 | Vue 3 · TypeScript · Vite · Ant Design Vue 4 · ECharts · Vue Router |
+| 测试 | pytest（离线用例 + `real_agent` 真实调用用例）· `vue-tsc` 类型检查 |
 
 ## 快速开始
 
@@ -127,7 +145,7 @@ npx vite              # 访问 http://127.0.0.1:5173
 2. **任务中心 → 发送任务**：勾选一个或多个 Agent，输入任务描述。
 3. **任务详情**：查看每个 Agent 的实时输出、Token、成本，以及工具调用、模型调用、权限拒绝等事件；可随时终止。
 4. **执行监控**：在全局事件流中按任务 / Agent / 事件类型 / 时间筛选，定位异常。
-5. **Agent 群聊**：建群邀请 Agent，设置角色与主控；`@Agent` 人工分工，或开启「自动协作」由主控拆分并分配，右侧面板跟进步骤、交接与审批，必要时暂停 / 恢复 / 改派。
+5. **Agent 群聊**：建群邀请 Agent，设置角色与主控；`@Agent` 人工分工，或开启「自动协作」由规划链拆分并分配，右侧面板跟进步骤、交接与审批，必要时暂停 / 恢复 / 改派。
 6. **系统设置**：管理用户与角色、项目、审计日志。
 
 ## 目录结构
@@ -145,6 +163,7 @@ agentops-center/
 │  │  ├─ config.py               # AGENTOPS_* 配置
 │  │  ├─ models.py               # 数据模型（用户/项目/Agent/任务/运行/事件/会话…）
 │  │  ├─ security.py             # 登录、RBAC、密钥加解密、敏感信息脱敏
+│  │  ├─ chains/                 # LangChain 编排层：planner / summarizer / callbacks / runnable
 │  │  ├─ adapters/               # claude_code / opencode / codex / http_agent / langchain_agent
 │  │  ├─ services/               # task_runner / collab / event_bus / trace / audit
 │  │  └─ api/                    # auth / agents / tasks / collab / system
@@ -152,8 +171,11 @@ agentops-center/
 └─ frontend/
    └─ src/
       ├─ pages/                  # Dashboard / Agents / Tasks / TaskDetail / Chat / Monitor / Settings
-      ├─ api.ts                  # 请求封装
-      └─ live.ts                 # SSE 实时事件
+      ├─ components/             # AppLayout / StatusTag / LevelTag / EventTag
+      ├─ api.ts                  # 请求封装与类型
+      ├─ auth.ts                 # 登录态
+      ├─ live.ts                 # 共享 WebSocket 订阅
+      └─ router/                 # 路由与登录守卫
 ```
 
 ## 配置
@@ -166,6 +188,13 @@ agentops-center/
 | `AGENTOPS_DATABASE_URL` | SQLite（`data/agentops.db`） | PostgreSQL：`postgresql+asyncpg://user:pass@host:port/db` |
 | `AGENTOPS_MAX_GLOBAL_CONCURRENCY` | `4` | 同时运行的 Agent 进程上限 |
 | `AGENTOPS_JWT_EXPIRE_MINUTES` | `720` | 登录有效期 |
+| `AGENTOPS_ORCHESTRATOR_PROVIDER` | `deepseek` | 编排链使用的 provider：`deepseek` / `openai` / `anthropic` |
+| `AGENTOPS_ORCHESTRATOR_MODEL` | `deepseek-chat` | 编排链模型名 |
+| `AGENTOPS_ORCHESTRATOR_BASE_URL` | 空 | 自定义 OpenAI 兼容地址 |
+| `AGENTOPS_ORCHESTRATOR_API_KEY_ENV` | `DEEPSEEK_API_KEY` | 从哪个环境变量读编排密钥 |
+| `AGENTOPS_ORCHESTRATOR_API_KEY` | 空 | 直接写入密钥（优先级高于环境变量） |
+
+不配置编排密钥也能跑：自动协作会退回“由主控 Agent 产出计划”的路径，只是多花一次 Agent 调用。
 
 要用 PostgreSQL，先起依赖：
 
@@ -185,7 +214,7 @@ $env:AGENTOPS_DATABASE_URL = "postgresql+asyncpg://agentops:agentops@127.0.0.1:5
 | 任务 `/api/tasks` | `POST /tasks`、`GET /tasks/{id}`、`GET /tasks/{id}/events`、`POST /tasks/{id}/cancel` | 派发、详情、事件、终止 |
 | 协作 `/api/collab` | `POST /conversations`、`POST /conversations/{id}/messages`、`POST /collab/steps/{id}/retry`、`POST /approvals/{id}/approve` | 群聊、步骤、审批、交接 |
 | 系统 `/api/system` | `GET /dashboard/summary`、`GET /projects`、`GET /audit-logs` | 看板、项目、审计 |
-| 实时 | `GET /api/events` | SSE 全局事件流 |
+| 实时 | `GET /api/events`、`WS /api/ws` | SSE 事件流与实时推送 |
 
 ## 测试
 
@@ -195,7 +224,8 @@ uv run pytest                    # 离线用例，不消耗 Token
 uv run pytest -m real_agent -s   # 调用本机真实 Claude Code / OpenCode（消耗少量额度）
 
 cd ..\frontend
-npx tsc -b                       # 前端类型检查
+npm run typecheck                # vue-tsc 类型检查
+npm run build                    # 生产构建（含前端类型检查）
 ```
 
 ## 安全与数据
@@ -228,6 +258,7 @@ npx tsc -b                       # 前端类型检查
 - [02 · 功能模块拆分、数据库设计与核心数据流](docs/02-模块拆分-数据模型-数据流.md)
 - [03 · 外部 Agent 真实接入能力调研](docs/03-Agent接入能力调研.md)
 - [04 · 开发计划与验收标准](docs/04-开发计划与验收标准.md)
+- [05 · 技术栈重构：LangChain 编排 + Vue 3 前端](docs/05-技术栈重构-LangChain与Vue3.md)
 - [第一阶段验收报告](docs/phase1-验收报告.md)
 - [第二阶段验收报告](docs/phase2-验收报告.md)
 

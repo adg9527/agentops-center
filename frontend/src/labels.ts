@@ -1,4 +1,3 @@
-import { Tag, Tooltip } from 'antd'
 import dayjs from 'dayjs'
 import type { Level } from './api'
 
@@ -12,11 +11,6 @@ export const TASK_STATUS: Record<string, { text: string; color: string }> = {
   failed: { text: '失败', color: 'error' },
   cancelled: { text: '已取消', color: 'default' },
   timeout: { text: '超时', color: 'error' },
-}
-
-export function StatusTag({ status }: { status: string }) {
-  const s = TASK_STATUS[status] ?? { text: status, color: 'default' }
-  return <Tag color={s.color}>{s.text}</Tag>
 }
 
 export const HEALTH: Record<string, { text: string; color: string }> = {
@@ -40,16 +34,11 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   mcp_config: 'MCP 配置注入',
 }
 
-const LEVEL: Record<Level, { text: string; color: string }> = {
+export const LEVEL: Record<Level, { text: string; color: string }> = {
   supported: { text: '支持', color: 'success' },
   partial: { text: '部分支持', color: 'warning' },
   unsupported: { text: '不支持', color: 'default' },
   unknown: { text: '未验证', color: 'purple' },
-}
-
-export function LevelTag({ level }: { level: Level }) {
-  const l = LEVEL[level] ?? LEVEL.unknown
-  return <Tag color={l.color}>{l.text}</Tag>
 }
 
 export const EVENT_TYPES: Record<string, { text: string; color: string }> = {
@@ -75,14 +64,10 @@ export const EVENT_TYPES: Record<string, { text: string; color: string }> = {
   log: { text: '日志', color: 'default' },
 }
 
-export function EventTag({ type }: { type: string }) {
-  const e = EVENT_TYPES[type] ?? { text: type, color: 'default' }
-  return (
-    <Tooltip title={type}>
-      <Tag color={e.color}>{e.text}</Tag>
-    </Tooltip>
-  )
-}
+export const taskStatus = (s: string) => TASK_STATUS[s] ?? { text: s, color: 'default' }
+export const health = (s: string) => HEALTH[s] ?? { text: s, color: 'default' }
+export const level = (l: Level) => LEVEL[l] ?? LEVEL.unknown
+export const eventType = (t: string) => EVENT_TYPES[t] ?? { text: t, color: 'default' }
 
 export const fmtTime = (s?: string | null) => (s ? dayjs(s).format('MM-DD HH:mm:ss') : '—')
 export const fmtMs = (ms?: number | null) =>

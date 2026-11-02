@@ -12,6 +12,7 @@ from pathlib import Path
 from sqlalchemy import select, update
 
 from ..adapters import get_adapter
+from ..chains.runnable import run_adapter
 from ..adapters.base import AdapterEvent, RunRequest, RunResult
 from ..config import get_settings
 from ..db import session_factory, utcnow
@@ -198,7 +199,7 @@ class TaskRunner:
                 req = RunRequest(prompt=task.prompt, workdir=Path(task.workspace_dir), config=agent.config,
                                  secrets=secrets, model=agent.model, timeout_sec=agent.timeout_sec)
                 try:
-                    result = await adapter.run(req, emit, cancel)
+                    result = await run_adapter(adapter, req, emit, cancel, task_id=task.id)
                 except Exception as e:
                     log.exception("adapter %s crashed", agent.adapter_type)
                     result = RunResult(ok=False, error=f"Adapter 异常: {type(e).__name__}: {e}")
