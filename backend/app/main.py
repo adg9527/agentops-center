@@ -25,9 +25,14 @@ async def lifespan(app: FastAPI):
     await recover_collab()
     await recover_interrupted()
     from .mcp_server import mcp_session_manager
+    from .services.broker import TASK_QUEUE, broker as task_broker
+
+    task_broker.on(TASK_QUEUE, runner.execute_job)
+    await task_broker.start()
 
     async with mcp_session_manager():
         yield
+    await task_broker.stop()
     await orchestrator.shutdown()
     await runner.shutdown()
 

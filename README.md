@@ -39,6 +39,7 @@ AgentOps Center 不是又一个 Agent 框架，而是**给已有 Agent 做的统
 
 | 能力 | 说明 |
 | --- | --- |
+| **调度与工作流** | 每个任务由 **LangGraph** 状态图编排（plan → 并行 execute → finalize），作业投递到 **RabbitMQ** `agentops.tasks`，由消费者取任务执行并回写进度；没配 broker 时自动退回进程内队列，功能等价 |
 | **多 Agent 接入** | Claude Code（CLI 或官方 **Agent SDK**）、OpenCode、Codex、任意 HTTP Agent、平台内置 LangChain Agent；统一的任务、事件、Token、成本模型 |
 | **任务执行与观测** | 一任务多 Agent 并行；独立工作目录；实时输出、工具调用时间线、Token/成本、终止；崩溃后自动恢复 |
 | **多 Agent 协作** | 群聊里 `@Agent` 人工分工，或「自动协作」由 LangChain 规划链拆解、分配、汇总；步骤 DAG、结构化交接、审批、暂停/恢复/重试/改派 |
@@ -73,6 +74,9 @@ flowchart LR
   U["浏览器<br/>Vue 3 + Ant Design Vue + ECharts"] -->|REST + WebSocket| A["FastAPI 应用"]
   A --> S["服务层<br/>task_runner · collab · eval · artifacts<br/>local_sessions · graph · event_bus · trace"]
   S --> L["LangChain 1.4<br/>init_chat_model · create_agent · response_format"]
+  S --> WF["LangGraph 工作流<br/>plan → execute(Send) → finalize"]
+  WF --> Q[["RabbitMQ<br/>agentops.tasks / .progress"]]
+  Q --> WK["消费者<br/>TaskRunner.execute_job"]
   S --> DB[("SQLite / PostgreSQL<br/>19 张表")]
   S --> W[["data/workspaces/task-<id>"]]
   S --> AD["Agent Adapter 层"]
@@ -146,6 +150,10 @@ cd backend; uv run python -m app.mcp_server
 **方式二**：
 
 ```powershell
+# 可选：起 RabbitMQ 作为调度中心（不起则用进程内队列）
+docker compose up -d rabbitmq
+$env:AGENTOPS_RABBITMQ_URL = "amqp://agentops:agentops@127.0.0.1:5672/"
+
 .\start.ps1          # 构建前端并在 http://127.0.0.1:8000 提供完整平台
 .\start.ps1 -Dev     # 开发模式：后端 :8000 + Vite 热更新 http://127.0.0.1:5173
 .\start.ps1 -Rebuild # 强制重建前端
@@ -169,6 +177,8 @@ cd frontend; npm install; npx vite
 | `AGENTOPS_DATA_DIR` | `./data` | 数据库、密钥、任务工作目录 |
 | `AGENTOPS_DATABASE_URL` | SQLite（`data/agentops.db`） | PostgreSQL：`postgresql+asyncpg://user:pass@host:port/db` |
 | `AGENTOPS_MAX_GLOBAL_CONCURRENCY` | `4` | 同时运行的 Agent 进程上限 |
+| `AGENTOPS_SCHEDULER` | `langgraph` | 任务调度方式：`langgraph`（图 + 队列）或 `legacy`（原来的进程内循环） |
+| `AGENTOPS_RABBITMQ_URL` | 空 | AMQP 地址，如 `amqp://agentops:agentops@127.0.0.1:5672/`；留空则用进程内队列 |
 | `AGENTOPS_JWT_EXPIRE_MINUTES` | `720` | 登录有效期 |
 | `AGENTOPS_ORCHESTRATOR_PROVIDER` | `deepseek` | 编排链 provider：`deepseek` / `openai` / `anthropic` |
 | `AGENTOPS_ORCHESTRATOR_MODEL` | `deepseek-chat` | 编排链模型 |
@@ -193,7 +203,7 @@ cd frontend; npm install; npx vite
 | 资产 | `/api/mcp-servers`、`/api/skills`、`/api/prompts` | 增删改查 + 连接测试 + 渲染预览 |
 | 评测 `/api/evals` | `POST /evals`、`POST /evals/{id}/run`、`GET /evals/{id}/runs`、`GET /evals/recent-runs` | 套件、多轮 loop、报告 |
 | 产物 `/api/artifacts` | `GET /artifacts/tasks`、`GET /artifacts/tasks/{id}/versions`、`GET /artifacts/diff`、`POST /artifacts/versions/{id}/restore` | 文件、版本、diff、恢复 |
-| 系统 `/api/system` | `GET /dashboard/summary`、`GET /projects`、`GET /audit-logs` | 看板、项目、审计 |
+| 系统 | `GET /api/dashboard/summary`、`GET /api/projects`、`GET /api/audit-logs`、**`GET /api/queue`** | 看板、项目、审计、调度中心状态 |
 | 实时 | `GET /events`、`WS /api/ws`、`/mcp` | 事件流、WebSocket、MCP |
 
 ## 数据模型

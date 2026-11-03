@@ -7,6 +7,7 @@ Each attempt is its own AgentRun row, so retries stay auditable. All state lives
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -18,6 +19,7 @@ from ..config import get_settings
 from ..db import session_factory, utcnow
 from ..models import TERMINAL_TASK, Agent, AgentRun, RunStatus, Task, TaskStatus
 from ..security import decrypt_secrets, redact
+from .broker import broker
 from .event_bus import bus
 from .trace import new_span_id, record_event, task_span_id
 
@@ -68,7 +70,12 @@ class TaskRunner:
     def submit(self, task_id: int):
         cancel = asyncio.Event()
         self._cancels[task_id] = cancel
-        job = asyncio.create_task(self._execute(task_id, cancel))
+        if get_settings().scheduler == "langgraph":
+            from .workflow import run_task
+
+            job = asyncio.create_task(run_task(self, task_id, cancel))
+        else:
+            job = asyncio.create_task(self._execute(task_id, cancel))
         self._jobs[task_id] = job
         job.add_done_callback(lambda _: (self._jobs.pop(task_id, None), self._cancels.pop(task_id, None)))
 
@@ -100,26 +107,87 @@ class TaskRunner:
             task = await s.get(Task, task_id)
         bus.publish("task_updated", {"id": task_id, "status": task.status, "error": task.error})
 
-    async def _execute(self, task_id: int, cancel: asyncio.Event):
+    # ------------------------------------------------------- LangGraph workflow nodes
+
+    async def prepare(self, task_id: int) -> dict:
+        """`plan` 节点：把任务置为 running，并为每个 Agent 产出一个待投递的作业。"""
         async with session_factory()() as s:
             task = await s.get(Task, task_id)
-            runs = (await s.scalars(select(AgentRun).where(AgentRun.task_id == task_id))).all()
-        trace_id, root = task.trace_id, task_span_id(task)
-        parent_task_span = None
-        if task.parent_task_id:
-            async with session_factory()() as s:
-                parent = await s.get(Task, task.parent_task_id)
-            parent_task_span = task_span_id(parent) if parent else None
+            runs = list((await s.scalars(select(AgentRun).where(AgentRun.task_id == task_id))).all())
+        if task is None:
+            return {"jobs": [], "final": TaskStatus.failed.value}
         Path(task.workspace_dir).mkdir(parents=True, exist_ok=True)
-        await self._set_task(task_id, status=TaskStatus.running.value, started_at=utcnow())
-        await record_event(trace_id=trace_id, span_id=root, parent_span_id=parent_task_span, event_type="task.started", task_id=task_id,
-                           name=task.title, input_summary=task.prompt)
+        if task.started_at is None:
+            await self._set_task(task_id, status=TaskStatus.running.value, started_at=utcnow())
+            await record_event(trace_id=task.trace_id, span_id=task_span_id(task),
+                               parent_span_id=await self._parent_span(task), event_type="task.started",
+                               task_id=task_id, name=task.title, input_summary=task.prompt)
+        else:
+            await self._set_task(task_id, status=TaskStatus.running.value, finished_at=None, error=None)
+        jobs = [{"task_id": task_id, "run_id": run.id, "agent_id": run.agent_id} for run in runs]
+        if jobs:
+            bus.publish("task_queued", {"id": task_id, "jobs": len(jobs)})
+        return {"jobs": jobs}
+
+    async def _parent_span(self, task: Task) -> str | None:
+        if not task.parent_task_id:
+            return None
+        async with session_factory()() as s:
+            parent = await s.get(Task, task.parent_task_id)
+        return task_span_id(parent) if parent else None
+
+    async def execute_job(self, payload: dict) -> None:
+        """队列消费者：真正执行一个 Agent 作业，并把进度发到 `agentops.progress`。"""
+        task_id, run_id = int(payload["task_id"]), int(payload["run_id"])
+        async with session_factory()() as s:
+            task = await s.get(Task, task_id)
+            run = await s.get(AgentRun, run_id)
+        if task is None or run is None:
+            return
+        cancel = self._cancels.setdefault(task_id, asyncio.Event())
+        await broker.publish_progress({"task_id": task_id, "run_id": run_id, "agent_id": run.agent_id,
+                                       "status": "started"})
         try:
-            statuses = await asyncio.gather(*(self._run_agent(task, r, cancel) for r in runs))
-        except Exception as e:  # defensive: never leave a task stuck in running
-            log.exception("task %s crashed", task_id)
-            statuses = [RunStatus.failed.value]
-            await self._set_task(task_id, error=f"内部错误: {e}")
+            await self._run_agent(task, run, cancel)
+        finally:
+            async with session_factory()() as s:
+                updated = await s.get(AgentRun, run_id)
+            await broker.publish_progress({"task_id": task_id, "run_id": run_id, "agent_id": run.agent_id,
+                                           "status": updated.status if updated else "unknown"})
+
+    async def wait_run(self, run_id: int, cancel: asyncio.Event | None = None) -> str:
+        """`execute` 节点在投递后等待该作业结束（真正的执行在消费者里）。
+
+        取消时不要立刻返回：消费者还要把进程杀掉、把 run 标成 cancelled，
+        否则任务会先变 cancelled 而 run 仍是 running。
+        """
+        cancelled_at: float | None = None
+        while True:
+            async with session_factory()() as s:
+                run = await s.get(AgentRun, run_id)
+            if run is None:
+                return RunStatus.failed.value
+            if run.status not in (RunStatus.pending.value, RunStatus.running.value):
+                return run.status
+            if cancel is not None and cancel.is_set():
+                if cancelled_at is None:
+                    cancelled_at = time.monotonic()
+                elif time.monotonic() - cancelled_at > 15:
+                    return RunStatus.cancelled.value
+            await asyncio.sleep(0.2)
+
+    async def finalize(self, task_id: int, statuses: list[str]) -> str:
+        async with session_factory()() as s:
+            task = await s.get(Task, task_id)
+        if task is None:
+            return TaskStatus.failed.value
+        cancel = self._cancels.get(task_id) or asyncio.Event()
+        return await self._finalize_task(task, list(statuses), cancel)
+
+    async def fail_task(self, task_id: int, error: str) -> None:
+        await self._set_task(task_id, status=TaskStatus.failed.value, finished_at=utcnow(), error=error[:2000])
+
+    async def _finalize_task(self, task: Task, statuses: list[str], cancel: asyncio.Event) -> str:
         if cancel.is_set():
             final = TaskStatus.cancelled
         elif statuses and all(st == RunStatus.completed.value for st in statuses):
@@ -127,16 +195,45 @@ class TaskRunner:
         else:
             final = TaskStatus.failed
         err = None if final == TaskStatus.completed else f"{sum(st != 'completed' for st in statuses)}/{len(statuses)} 个 Agent 未成功"
-        await self._set_task(task_id, status=final.value, finished_at=utcnow(), error=err)
-        await record_event(trace_id=trace_id, span_id=root, parent_span_id=parent_task_span, event_type=f"task.{final.value}", task_id=task_id,
-                           name=task.title, status="ok" if final == TaskStatus.completed else "error", output_summary=err)
-        # 产物快照：任务结束就把工作目录里的文件记一个版本（内容未变则自动跳过）
+        await self._set_task(task.id, status=final.value, finished_at=utcnow(), error=err)
+        await record_event(trace_id=task.trace_id, span_id=task_span_id(task),
+                           parent_span_id=await self._parent_span(task), event_type=f"task.{final.value}",
+                           task_id=task.id, name=task.title,
+                           status="ok" if final == TaskStatus.completed else "error", output_summary=err)
         try:
             from .artifacts import snapshot_task
 
-            await snapshot_task(task_id, note=f"task {final.value}")
-        except Exception:  # 快照失败不能影响任务结果
-            log.exception("artifact snapshot failed for task %s", task_id)
+            await snapshot_task(task.id, note=f"task {final.value}")
+        except Exception:
+            log.exception("artifact snapshot failed for task %s", task.id)
+        return final.value
+
+    async def _execute(self, task_id: int, cancel: asyncio.Event):
+        """legacy 路径（AGENTOPS_SCHEDULER=legacy）：进程内并发执行，不走队列。"""
+        prepared = await self.prepare(task_id)
+        jobs = prepared.get("jobs") or []
+        if not jobs:
+            await self.fail_task(task_id, "没有可执行的 Agent 运行记录")
+            return
+
+        async def one(job: dict) -> str:
+            async with session_factory()() as s:
+                task = await s.get(Task, job["task_id"])
+                run = await s.get(AgentRun, job["run_id"])
+            if task is None or run is None:
+                return RunStatus.failed.value
+            return await self._run_agent(task, run, cancel)
+
+        try:
+            statuses = list(await asyncio.gather(*(one(j) for j in jobs)))
+        except Exception as e:  # defensive: never leave a task stuck in running
+            log.exception("task %s crashed", task_id)
+            statuses = [RunStatus.failed.value]
+            await self._set_task(task_id, error=f"内部错误: {e}")
+        async with session_factory()() as s:
+            task = await s.get(Task, task_id)
+        if task is not None:
+            await self._finalize_task(task, statuses, cancel)
 
     async def _run_agent(self, task: Task, first_run: AgentRun, cancel: asyncio.Event) -> str:
         run = first_run

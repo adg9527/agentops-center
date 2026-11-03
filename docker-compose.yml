@@ -20,6 +20,21 @@ services:
       - agentops_pgdata:/var/lib/postgresql/data
     restart: unless-stopped
 
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: agentops-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: agentops
+      RABBITMQ_DEFAULT_PASS: agentops   # local-only dev credential
+    ports:
+      - "127.0.0.1:5672:5672"    # AMQP
+      - "127.0.0.1:15672:15672"  # 管理界面 http://127.0.0.1:15672
+    volumes:
+      - agentops_rabbitmq:/var/lib/rabbitmq
+    restart: unless-stopped
+
 volumes:
   agentops_pgdata:
     name: agentops_pgdata
+  agentops_rabbitmq:
+    name: agentops_rabbitmq

@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     # Global cap on concurrently running agent processes
     max_global_concurrency: int = 4
 
+    # Scheduling: "langgraph" drives each task through a LangGraph workflow and hands
+    # the per-agent jobs to the broker; "legacy" keeps the original in-process loop.
+    scheduler: str = "langgraph"
+    # amqp://guest:guest@127.0.0.1:5672/ — empty means "no RabbitMQ, use in-process queue"
+    rabbitmq_url: str = ""
+
     # Orchestration chains (planning / summarising) run on a LangChain chat model.
     # Leave the key unset and the coordinator falls back to the agent-driven path.
     orchestrator_provider: str = "deepseek"

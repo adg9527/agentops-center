@@ -39,7 +39,18 @@ const selectedConv = ref<number | null>(null)
 const agentFilter = ref<number | undefined>(undefined)
 const statusFilter = ref<string | undefined>(undefined)
 
+interface QueueStatus {
+  backend: string
+  connected: boolean
+  scheduler: string
+  queues: Record<string, number | null>
+  published: number
+  consumed: number
+  error: string
+}
+
 const sendOpen = ref(false)
+const queue = ref<QueueStatus | null>(null)
 const sending = ref(false)
 const form = reactive({ title: '', prompt: '', agent_ids: [] as number[] })
 
@@ -121,6 +132,14 @@ async function loadConversations() {
   }
 }
 
+async function loadQueue() {
+  try {
+    queue.value = await api<QueueStatus>('/api/queue')
+  } catch {
+    queue.value = null
+  }
+}
+
 async function loadTasks() {
   loading.value = true
   try {
@@ -195,7 +214,11 @@ let poll: number | undefined
 onMounted(async () => {
   await Promise.all([loadAgents(), loadConversations(), loadTasks()])
   // 兜底轮询：有任务在跑时每 4 秒刷新一次进度（WebSocket 事件之外的保险）
+  void loadQueue()
+  let tick = 0
   poll = window.setInterval(() => {
+    tick += 1
+    if (tick % 3 === 0) void loadQueue()
     const busy = tasks.value.some((x) =>
       ['running', 'pending', 'waiting_approval', 'waiting_handoff', 'paused'].includes(x.status),
     )
@@ -268,6 +291,15 @@ onBeforeUnmount(() => {
               :options="agents.map((a) => ({ label: a.name, value: a.id }))"
             />
             <a-select v-model:value="statusFilter" style="width: 130px" :options="STATUS_OPTIONS" />
+            <a-tooltip
+              v-if="queue"
+              :title="queue.backend === 'rabbitmq' ? 'RabbitMQ 已连接' : queue.error || '未配置 RabbitMQ，使用进程内队列'"
+            >
+              <a-tag :color="queue.backend === 'rabbitmq' ? 'green' : 'orange'">
+                调度 {{ queue.backend === 'rabbitmq' ? 'RabbitMQ' : '内存' }}
+                · 待处理 {{ queue.queues['agentops.tasks'] ?? 0 }}
+              </a-tag>
+            </a-tooltip>
             <a-button size="small" :loading="loading" @click="loadTasks">刷新</a-button>
             <a-button v-if="auth.can('operator')" type="primary" size="small" @click="sendOpen = true">发送任务</a-button>
           </a-space>

@@ -26,6 +26,14 @@ _NOT_YET = {
 }
 
 
+@router.get("/queue")
+async def queue_status(_: User = Depends(current_user)):
+    """调度中心状态：RabbitMQ 还是进程内队列、各队列积压、投递/消费计数。"""
+    from ..services.broker import broker
+
+    return broker.status()
+
+
 @router.get("/dashboard/summary")
 async def dashboard(days: int = 7, project_id: int | None = None, agent_id: int | None = None,
                     _: User = Depends(current_user), session: AsyncSession = Depends(get_session)):
