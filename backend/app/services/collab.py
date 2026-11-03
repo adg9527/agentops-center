@@ -530,7 +530,8 @@ class Orchestrator:
                 await post_message(root.conversation_id, f"步骤「{st.title}」无法执行：{agent.name} 已停用", task_id=root.id, step_id=st.id)
                 notify(root.id, root.conversation_id)
                 return
-            sub = Task(project_id=root.project_id, title=f"[{root.id}·{st.step_key}] {st.title}", prompt=prompt, mode="step",
+            sub = Task(project_id=root.project_id, title=f"[{root.id}·{st.step_key}] {st.title}", prompt=prompt,
+                       mode=st.kind or "step",
                        status=TaskStatus.pending.value, parent_task_id=root.id, conversation_id=root.conversation_id,
                        trace_id=root.trace_id, workspace_dir=root.workspace_dir, created_by=root.created_by)
             s.add(sub)
@@ -575,7 +576,7 @@ class Orchestrator:
             task_id=root.id, step_id=st.id,
             data={"step_key": st.step_key, "role": st.role, "status": st.status, "cost_usd": run.cost_usd if run else None,
                   "duration_ms": run.duration_ms if run else None, "brief": brief,
-                  "output_chars": len(full_output)},
+                  "output_chars": len(full_output), "sub_task_id": sub_id},
         )
         if ok and st.kind == "plan":
             await self._apply_plan(root, st)

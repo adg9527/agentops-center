@@ -224,7 +224,7 @@ const EMPTY_TASK: CollabTask = {
 const canOperate = computed(() => auth.can('operator'))
 const liveConnected = useLiveStatus()
 // 流式增量：任务执行中先显示，落库后清掉
-const streaming = ref<Record<number, { agent: string; text: string; thinking: string }>>({})
+const streaming = ref<Record<number, { agent: string; text: string; thinking: string; at: number }>>({})
 
 const convs = ref<Conv[]>([])
 const current = ref<number | null>(null)
@@ -456,6 +456,16 @@ function resetRoom() {
 
 // ------------------------------------------------------------------ realtime + polling fallback
 
+window.setInterval(() => {
+  const now = Date.now()
+  const stale = Object.entries(streaming.value).filter(([, s]) => now - (s.at || now) > 120_000)
+  if (stale.length) {
+    const next = { ...streaming.value }
+    for (const [key] of stale) delete next[Number(key)]
+    streaming.value = next
+  }
+}, 15_000)
+
 useLive((m) => {
   if (['message_created', 'conversation_updated', 'collab_updated'].includes(m.topic)) void loadConvs()
   const cid = current.value
@@ -465,14 +475,15 @@ useLive((m) => {
       msgs.value.push(m.data as Msg)
       void scrollToBottom()
     }
-    if (m.data.task_id != null && streaming.value[m.data.task_id]) {
+    const subId = m.data.sub_task_id ?? m.data.task_id
+    if (subId != null && streaming.value[subId]) {
       const next = { ...streaming.value }
-      delete next[m.data.task_id]
+      delete next[subId]
       streaming.value = next
     }
   } else if (m.topic === 'agent_delta' && m.data?.conversation_id === cid) {
     const key = Number(m.data.task_id)
-    const prev = streaming.value[key] ?? { agent: m.data.agent_name ?? 'Agent', text: '', thinking: '' }
+    const prev = streaming.value[key] ?? { agent: m.data.agent_name ?? 'Agent', text: '', thinking: '', at: 0 }
     const isThinking = !!m.data.thinking
     const chunk = m.data.text ?? ''
     streaming.value = {
@@ -481,6 +492,7 @@ useLive((m) => {
         agent: prev.agent,
         text: isThinking ? prev.text : prev.text + chunk,
         thinking: isThinking ? prev.thinking + chunk : '',
+        at: Date.now(),
       },
     }
     void scrollToBottom()
