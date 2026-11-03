@@ -104,7 +104,7 @@ flowchart LR
 | **Claude Code（Agent SDK）** | `claude-agent-sdk` 官方 Python API | 类型化消息：工具调用、成本、会话 ID 直接拿到，无需解析流 |
 | **OpenCode** | CLI：`opencode run --format json` | 模型要 `provider/模型名`，保存时按 `opencode models` 自动补全 |
 | **Codex** | CLI 适配器 | 需本机安装 codex |
-| **Ollama（本地模型）** | `/api/chat` 流式 NDJSON | 无需密钥、无成本；`base_url` 默认 `http://127.0.0.1:11434`，模型列表从 `/api/tags` 自动发现，输出实时流式显示 |
+| **Ollama（本地模型）** | `/api/chat` 流式 NDJSON | 无需密钥、无成本；`base_url` 默认 `http://127.0.0.1:11434`，模型从 `/api/tags` 自动发现；默认 `think=false`（推理模型否则只「思考」不出正文），思考过程会以「思考中」气泡实时显示 |
 | **自研 HTTP 服务** | 通用 HTTP 适配器 | POST 一个 JSON，按 dot-path 取结果 |
 | **WorkBuddy** | 暂无服务端 API | 本机只开 `127.0.0.1:18488` 的 `/workbuddy/probe` 探针，其 guest SDK 是内嵌网页的 postMessage 桥；它自己能**消费** MCP Server 与 OpenAI 兼容模型 |
 

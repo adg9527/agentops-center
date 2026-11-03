@@ -34,6 +34,16 @@ PROGRESS_QUEUE = "agentops.progress"
 Handler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
+def _port_open(host: str, port: int, timeout: float = 0.3) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 class Broker:
     """Publishes task jobs and runs one consumer per queue."""
 
@@ -67,6 +77,10 @@ class Broker:
         self._loop = loop
         self._started = True
         url = get_settings().rabbitmq_url
+        if not url and _port_open("127.0.0.1", 5672):
+            # 本机起了 RabbitMQ 但没配环境变量时直接用它（guest 只允许 localhost）
+            url = "amqp://guest:guest@127.0.0.1:5672/"
+            log.info("broker: detected a local RabbitMQ on 5672, using guest/guest")
         if url:
             try:
                 import aio_pika  # 延迟导入：没装 / 没配也不影响启动
@@ -136,8 +150,11 @@ class Broker:
         if queue in self._spawned:
             return
         self._spawned.add(queue)
-        task = asyncio.create_task(self._consume_loop(queue), name=f"broker:{queue}")
-        self._consumers.append(task)
+        # 慢任务不能堵住队列：工作队列起多个消费者并发取活儿
+        workers = max(1, get_settings().max_global_concurrency) if queue == TASK_QUEUE else 1
+        for index in range(workers):
+            task = asyncio.create_task(self._consume_loop(queue), name=f"broker:{queue}:{index}")
+            self._consumers.append(task)
 
     async def _consume_loop(self, queue: str) -> None:
         if self._connected:
@@ -180,6 +197,7 @@ class Broker:
             "queues": queues,
             "published": self._published,
             "consumed": self._consumed,
+            "workers": len([c for c in self._consumers if not c.done()]),
             "scheduler": get_settings().scheduler,
         }
 

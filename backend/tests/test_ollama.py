@@ -79,3 +79,16 @@ def test_check_connection_reports_unreachable(monkeypatch):
     monkeypatch.setattr(mod, "_get_json", boom)
     result = asyncio.run(OllamaAdapter().check_connection({"base_url": "http://127.0.0.1:1"}, {}))
     assert result.ok is False and "无法连接" in result.detail
+
+
+def test_body_disables_thinking_by_default(tmp_path):
+    """默认 think=false：否则推理模型会一直“思考”，几分钟都不出正文。"""
+    from app.adapters.base import RunRequest
+
+    adapter = OllamaAdapter()
+    req = RunRequest(prompt="hi", workdir=tmp_path, config={}, secrets={}, model="qwen3.5:4b", timeout_sec=10)
+    assert adapter._body(req)["think"] is False
+
+    on = RunRequest(prompt="hi", workdir=tmp_path, config={"think": True}, secrets={}, model="qwen3.5:4b",
+                    timeout_sec=10)
+    assert adapter._body(on)["think"] is True

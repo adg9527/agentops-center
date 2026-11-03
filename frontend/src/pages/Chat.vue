@@ -224,7 +224,7 @@ const EMPTY_TASK: CollabTask = {
 const canOperate = computed(() => auth.can('operator'))
 const liveConnected = useLiveStatus()
 // 流式增量：任务执行中先显示，落库后清掉
-const streaming = ref<Record<number, { agent: string; text: string }>>({})
+const streaming = ref<Record<number, { agent: string; text: string; thinking: string }>>({})
 
 const convs = ref<Conv[]>([])
 const current = ref<number | null>(null)
@@ -472,10 +472,16 @@ useLive((m) => {
     }
   } else if (m.topic === 'agent_delta' && m.data?.conversation_id === cid) {
     const key = Number(m.data.task_id)
-    const prev = streaming.value[key]
+    const prev = streaming.value[key] ?? { agent: m.data.agent_name ?? 'Agent', text: '', thinking: '' }
+    const isThinking = !!m.data.thinking
+    const chunk = m.data.text ?? ''
     streaming.value = {
       ...streaming.value,
-      [key]: { agent: m.data.agent_name ?? 'Agent', text: (prev?.text ?? '') + (m.data.text ?? '') },
+      [key]: {
+        agent: prev.agent,
+        text: isThinking ? prev.text : prev.text + chunk,
+        thinking: isThinking ? prev.thinking + chunk : '',
+      },
     }
     void scrollToBottom()
   } else if (m.topic === 'collab_updated' && m.data?.conversation_id === cid) {
@@ -914,11 +920,11 @@ async function submitAddStep() {
               <div class="msg-body">
                 <div class="msg-meta">
                   <b class="msg-sender">{{ s.agent }}</b>
-                  <a-tag color="processing" class="tiny-tag">生成中</a-tag>
+                  <a-tag color="processing" class="tiny-tag">{{ s.text ? '生成中' : '思考中' }}</a-tag>
                   <a-typography-text type="secondary" style="font-size: 11px">#{{ tid }}</a-typography-text>
                 </div>
-                <div class="msg-text">
-                  <MarkdownView :content="s.text" />
+                <div class="msg-text" :style="s.text ? {} : { opacity: 0.65, fontStyle: 'italic' }">
+                  <MarkdownView :content="s.text || s.thinking" />
                 </div>
               </div>
             </div>

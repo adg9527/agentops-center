@@ -24,6 +24,7 @@ class OllamaStreamParser:
     def __init__(self) -> None:
         self.result = RunResult(ok=False)
         self.texts: list[str] = []
+        self.thinking: list[str] = []
         self.done = False
         self.error: str | None = None
 
@@ -42,6 +43,11 @@ class OllamaStreamParser:
 
         out: list[AdapterEvent] = []
         message = data.get("message") or {}
+        thinking = message.get("thinking") or ""
+        if thinking:
+            # 推理模型会先流式输出 thinking；单独发事件，前端显示为“思考中”
+            self.thinking.append(thinking)
+            out.append(AdapterEvent(kind="agent.thinking", name="assistant", output=thinking))
         chunk = message.get("content") or ""
         if chunk:
             self.texts.append(chunk)
@@ -74,7 +80,10 @@ class OllamaStreamParser:
             r.error = "Ollama 未返回 done 事件（连接中断或超时）"
         if r.ok and not r.output.strip():
             r.ok = False
-            r.error = "Ollama 返回了空内容"
+            if self.thinking:
+                r.error = "Ollama 只输出了思考内容（thinking），没有最终回答；换个模型或缩短提示词再试"
+            else:
+                r.error = "Ollama 返回了空内容"
         return r
 
 
@@ -99,6 +108,9 @@ class OllamaAdapter(AgentAdapter):
         ConfigField("num_ctx", "上下文长度", type="number", default=0,
                     help="0 表示用模型默认；小显存可设 4096 节省内存"),
         ConfigField("keep_alive", "模型驻留时长", default="5m", help="Ollama keep_alive，例如 5m / 30m"),
+        ConfigField("think", "启用思考（thinking）", type="bool", default=False,
+                    help="关掉：推理模型直接给答案（推荐）。打开后模型会先输出思考过程，"
+                         "纯 CPU 上可能几分钟都不出正文"),
     ]
     capabilities = {
         "connection_check": Level.supported,
@@ -157,7 +169,8 @@ class OllamaAdapter(AgentAdapter):
             options["temperature"] = float(c["temperature"])
         if c.get("num_ctx"):
             options["num_ctx"] = int(c["num_ctx"])
-        body = {"model": req.model, "messages": messages, "stream": True}
+        body = {"model": req.model, "messages": messages, "stream": True,
+                "think": bool(c.get("think", False))}
         if options:
             body["options"] = options
         if c.get("keep_alive"):
@@ -170,19 +183,26 @@ class OllamaAdapter(AgentAdapter):
         url = f"{self._base(req.config)}/api/chat"
         timeout = httpx.Timeout(connect=10.0, read=req.timeout_sec, write=30.0, pool=10.0)
         started = time.monotonic()
+        body = self._body(req)
         try:
             async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-                async with client.stream("POST", url, json=self._body(req)) as resp:
-                    if resp.status_code >= 400:
-                        detail = (await resp.aread()).decode("utf-8", "replace")[:400]
-                        return RunResult(ok=False, model=req.model,
-                                         error=f"Ollama 返回 HTTP {resp.status_code}: {detail}")
-                    async for line in resp.aiter_lines():
-                        if cancel.is_set():
-                            parser.result.cancelled = True
-                            break
-                        for event in parser.feed(line):
-                            await emit(event)
+                for attempt in range(2):
+                    async with client.stream("POST", url, json=body) as resp:
+                        if resp.status_code >= 400:
+                            detail = (await resp.aread()).decode("utf-8", "replace")[:400]
+                            # 老版本 Ollama 不认 think 参数：去掉再试一次
+                            if attempt == 0 and "think" in detail.lower() and "think" in body:
+                                body.pop("think", None)
+                                continue
+                            return RunResult(ok=False, model=req.model,
+                                             error=f"Ollama 返回 HTTP {resp.status_code}: {detail}")
+                        async for line in resp.aiter_lines():
+                            if cancel.is_set():
+                                parser.result.cancelled = True
+                                break
+                            for event in parser.feed(line):
+                                await emit(event)
+                    break
         except httpx.ReadTimeout:
             parser.result.timed_out = True
         except Exception as exc:  # noqa: BLE001

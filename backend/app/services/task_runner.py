@@ -288,10 +288,11 @@ class TaskRunner:
                                attributes=ev.attributes, known_secrets=known, **common)
             if ev.kind == "session.started":
                 await self._update_detected(agent.id, ev.attributes)
-            elif ev.kind == "agent.message" and ev.output:
+            elif ev.kind in ("agent.message", "agent.thinking") and ev.output:
                 # 逐条文本推给前端，聊天窗口边跑边显示（最终仍以落库消息为准）
                 bus.publish("agent_delta", {"task_id": task.id, "conversation_id": task.conversation_id,
-                                            "agent_id": agent.id, "agent_name": agent.name, "text": ev.output})
+                                            "agent_id": agent.id, "agent_name": agent.name, "text": ev.output,
+                                            "thinking": ev.kind == "agent.thinking"})
 
         waited = False
         async with self._gsem(), self._asem(agent):
