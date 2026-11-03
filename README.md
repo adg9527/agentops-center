@@ -40,7 +40,7 @@ AgentOps Center 不是又一个 Agent 框架，而是**给已有 Agent 做的统
 | 能力 | 说明 |
 | --- | --- |
 | **调度与工作流** | 每个任务由 **LangGraph** 状态图编排（plan → 并行 execute → finalize），作业投递到 **RabbitMQ** `agentops.tasks`，由消费者取任务执行并回写进度；没配 broker 时自动退回进程内队列，功能等价 |
-| **多 Agent 接入** | Claude Code（CLI 或官方 **Agent SDK**）、OpenCode、Codex、任意 HTTP Agent、平台内置 LangChain Agent；统一的任务、事件、Token、成本模型 |
+| **多 Agent 接入** | Claude Code（CLI 或官方 **Agent SDK**）、OpenCode、Codex、**Ollama 本地模型**、任意 HTTP Agent、平台内置 LangChain Agent；统一的任务、事件、Token、成本模型 |
 | **任务执行与观测** | 一任务多 Agent 并行；独立工作目录；实时输出、工具调用时间线、Token/成本、终止；崩溃后自动恢复 |
 | **多 Agent 协作** | 群聊里 `@Agent` 人工分工，或「自动协作」由 LangChain 规划链拆解、分配、汇总；步骤 DAG、结构化交接、审批、暂停/恢复/重试/改派 |
 | **实时进度** | 群聊里每个 Agent 只发「步骤 + 进度 + 交接」简报，完整输出留在任务详情；任务中心按步骤显示进度条 |
@@ -104,6 +104,7 @@ flowchart LR
 | **Claude Code（Agent SDK）** | `claude-agent-sdk` 官方 Python API | 类型化消息：工具调用、成本、会话 ID 直接拿到，无需解析流 |
 | **OpenCode** | CLI：`opencode run --format json` | 模型要 `provider/模型名`，保存时按 `opencode models` 自动补全 |
 | **Codex** | CLI 适配器 | 需本机安装 codex |
+| **Ollama（本地模型）** | `/api/chat` 流式 NDJSON | 无需密钥、无成本；`base_url` 默认 `http://127.0.0.1:11434`，模型列表从 `/api/tags` 自动发现，输出实时流式显示 |
 | **自研 HTTP 服务** | 通用 HTTP 适配器 | POST 一个 JSON，按 dot-path 取结果 |
 | **WorkBuddy** | 暂无服务端 API | 本机只开 `127.0.0.1:18488` 的 `/workbuddy/probe` 探针，其 guest SDK 是内嵌网页的 postMessage 桥；它自己能**消费** MCP Server 与 OpenAI 兼容模型 |
 

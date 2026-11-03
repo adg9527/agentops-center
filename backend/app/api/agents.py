@@ -145,6 +145,14 @@ async def adapter_models(adapter_type: str, provider: str = "openai_compatible",
     if isinstance(adapter, OpenCodeAdapter):
         exe = resolve_opencode(None)
         return {"discoverable": True, "models": await adapter.list_models(exe) if exe else []}
+    if getattr(adapter, "type", "") == "ollama":
+        from ..adapters.ollama import DEFAULT_BASE
+
+        try:
+            models = await adapter.list_models({"base_url": base_url or DEFAULT_BASE})
+            return {"discoverable": True, "models": models}
+        except Exception as exc:  # noqa: BLE001
+            return {"discoverable": True, "models": [], "detail": f"连接 Ollama 失败：{exc}"}
     if isinstance(adapter, LangChainAdapter):
         cfg = {"provider": provider, "base_url": base_url, "api_key_env": api_key_env}
         key = adapter._api_key(cfg, {})
